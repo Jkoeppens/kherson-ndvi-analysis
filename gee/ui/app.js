@@ -1,72 +1,60 @@
-// gee/ui/app.js
+// gee/ui/app.js (refactored for dual Z-standardization)
 
-/**
- * Main UI orchestration for NDVI Z-score analysis.
- * Allows dynamic selection of analysis and comparison region.
- * Computes Z-correction dynamically based on comparison NDVI.
- */
-
-// UI elements
+// UI controls
 var regionSelect = ui.Select({
-  items: Object.keys(regionDefs),
+  items: regionKeys,
   placeholder: 'Select analysis region'
 });
 
 var compSelect = ui.Select({
-  items: Object.keys(regionDefs),
+  items: regionKeys,
   placeholder: 'Select comparison region'
 });
 
 var yearSelect = ui.Select({
-  items: ['2022', '2023', '2024'],
+  items: config.analysisYears.map(String),
   placeholder: 'Select year'
 });
 
 var runButton = ui.Button({
   label: 'Run Analysis',
-  onClick: function() {
+  onClick: function () {
     var regionName = regionSelect.getValue();
     var compName = compSelect.getValue();
     var year = parseInt(yearSelect.getValue(), 10);
-    if (!regionName || !compName || !year) {
-      print('⚠️ Please select region, comparison, and year.');
+
+    if (!isValidRegion(regionName) || !isValidRegion(compName) || !year) {
+      print('⚠️ Please select valid regions and year.');
       return;
     }
 
-    var region = regionDefs[regionName];
-    var compRegion = regionDefs[compName];
+    var region = regionDefs[regionName].geometry;
+    var compRegion = regionDefs[compName].geometry;
     Map.centerObject(region, 8);
 
-    var cropland = ee.Image('USGS/GFSAD1000_V1');
-    var croplandMask = cropland.gt(0).clip(region);
+    // Cropland masks
+    var cropland = ee.Image(config.croplandSource);
+    var maskA = cropland.gt(0).clip(region);
+    var maskB = cropland.gt(0).clip(compRegion);
 
-    var baseline = calculateBaseline([2018, 2019, 2020, 2021], region, croplandMask);
-    var ndvi = getNDVISeason(year, region).median().updateMask(croplandMask);
+    // Z images (region-wise standardized)
+    var zA = calculateZImage(year, region, maskA);
+    var zB = calculateZImage(year, compRegion, maskB);
 
-    var ndvi_comp = getNDVISeason(year, compRegion).median();
-    var z_comp = ndvi_comp.subtract(baseline.median)
-                          .divide(baseline.stdDev.add(0.0001))
-                          .rename('Z_Ref');
+    // Z correction: A - B
+    var zCorr = zA.subtract(zB).rename('Z_Corrected');
+    var clipped = showZCorrectedLayer(zCorr, 'Z Corrected ' + year);
 
-    var z_comp_mean = z_comp.reduceRegion({
-      reducer: ee.Reducer.mean(),
-      geometry: compRegion,
-      scale: 100,
-      maxPixels: 1e9
-    }).get('Z_Ref');
+    renderZHistogram(clipped, region, year, null); // no vinnytsiaStats needed
 
-z_comp_mean.evaluate(function(z_val) {
-  var zImage = computeZCorrected(ndvi, baseline.median, baseline.stdDev, z_val, region);
-  var clipped = showZCorrectedLayer(zImage, 'Z Corrected ' + year);
-  renderZHistogram(clipped, region, year, null);
-  showFrontline(year);
-}); // closes .evaluate()
-
-  } // ✅ ← this closes the .onClick function
+    if (config.frontlineAssets[year]) {
+      showFrontline(year);
+    } else {
+      print('ℹ️ No frontline data for year', year);
+    }
+  }
 });
 
-
-// Layout
 // Layout
 var panel = ui.Panel({
   widgets: [
@@ -76,8 +64,7 @@ var panel = ui.Panel({
     ui.Label('Year:'), yearSelect,
     runButton
   ],
-  style: {width: '300px'}
+  style: { width: '300px' }
 });
-
 
 ui.root.insert(0, panel);

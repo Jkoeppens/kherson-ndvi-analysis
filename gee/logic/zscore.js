@@ -1,41 +1,55 @@
-// gee/logic/zscore.js
-
 /**
- * Calculate NDVI baseline (median and stdDev) from a list of years.
- * Uses cropland mask to focus on relevant pixels.
+ * Berechnet NDVI-Baseline (Median und StdDev) aus mehreren Jahren.
+ * Optionaler Funktionsparameter für NDVI-Zugriff (testbar).
  * @param {number[]} years 
  * @param {ee.Geometry} region 
  * @param {ee.Image} croplandMask 
- * @param {function} getNDVISeason 
+ * @param {function} getNDVI [optional]
  * @returns {{median: ee.Image, stdDev: ee.Image}}
  */
-function calculateBaseline(years, region, croplandMask) {
-  var baseline = ee.ImageCollection(years.map(function(y) {
+function calculateBaseline(years, region, croplandMask, getNDVI) {
+  var getNDVISeason = getNDVI || exports.getNDVISeason;
+
+  var baseline = ee.ImageCollection(years.map(function (y) {
     return getNDVISeason(y, region).median().updateMask(croplandMask);
   }));
+
+  var reduced = baseline.reduce(ee.Reducer.median().combine({
+    reducer2: ee.Reducer.stdDev(),
+    sharedInputs: true
+  }));
+
   return {
-    median: baseline.reduce(ee.Reducer.median()),
-    stdDev: baseline.reduce(ee.Reducer.stdDev())
+    median: reduced.select('NDVI_median'),
+    stdDev: reduced.select('NDVI_stdDev')
   };
 }
 
-
 /**
- * Compute corrected Z-score image for a given year.
- * Subtracts Vinnytsia reference Z from Kherson raw Z.
- * @param {ee.Image} ndviImg 
- * @param {ee.Image} baselineMedian 
- * @param {ee.Image} baselineStdDev 
- * @param {number} vinnytsiaZ 
- * @param {ee.Geometry} region 
+ * Berechnet den Z-Wert aus NDVI, Median, StdDev.
+ * @param {ee.Image} ndvi 
+ * @param {ee.Image} median 
+ * @param {ee.Image} stdDev 
  * @returns {ee.Image}
  */
-function computeZCorrected(ndviImg, baselineMedian, baselineStdDev, vinnytsiaZ, region) {
-  var z_kh = ndviImg.subtract(baselineMedian).divide(baselineStdDev.add(0.0001));
-  var z_vinnytsia_img = ee.Image.constant(vinnytsiaZ).clip(region);
-  return z_kh.subtract(z_vinnytsia_img).rename('Z_Corrected');
+function calculateZ(ndvi, median, stdDev) {
+  return ndvi.subtract(median).divide(stdDev.add(0.0001)).rename('Z');
 }
 
-// Conceptual exports
+/**
+ * Berechnet Z-Wert-Bild für eine Region und ein Jahr.
+ * @param {number} year 
+ * @param {ee.Geometry} region 
+ * @param {ee.Image} croplandMask
+ * @returns {ee.Image}
+ */
+function calculateZImage(year, region, croplandMask) {
+  var baseline = calculateBaseline(config.baselineYears, region, croplandMask);
+  var ndvi = getNDVISeason(year, region).median().updateMask(croplandMask);
+  return calculateZ(ndvi, baseline.median, baseline.stdDev);
+}
+
+// Konzeptuelle Exporte
 exports.calculateBaseline = calculateBaseline;
-exports.computeZCorrected = computeZCorrected;
+exports.calculateZ = calculateZ;
+exports.calculateZImage = calculateZImage;

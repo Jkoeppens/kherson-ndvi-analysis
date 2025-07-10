@@ -1,21 +1,94 @@
 // Auto-generated main.js for GEE
-// Generated on Thu Jul 10 23:44:51 CEST 2025
+// Generated on Fri Jul 11 00:56:08 CEST 2025
 
-// gee/logic/regions.js
-
-// Geometries for regional NDVI/Z analysis
+/**
+ * Geometrien und Metadaten für NDVI/Z-Analyse-Regionen.
+ */
 var regionDefs = {
-  kherson: ee.Geometry.Rectangle([32.0, 46.0, 33.0, 47.0]),
-  vinnytsia: ee.Geometry.Rectangle([27.6, 47.9, 28.4, 48.6]),
-  kharkiv: ee.Geometry.Rectangle([36.0, 49.5, 37.5, 50.5]),
-  donetsk: ee.Geometry.Rectangle([37.0, 47.0, 38.5, 48.5]),
-  luhansk: ee.Geometry.Rectangle([38.0, 48.0, 39.5, 49.5]),
-  zaporizhzhia: ee.Geometry.Rectangle([35.0, 47.0, 36.5, 48.0]),
-  mariupol: ee.Geometry.Rectangle([37.0, 47.0, 38.0, 47.5])
+  kherson: {
+    geometry: ee.Geometry.Rectangle([32.0, 46.0, 33.0, 47.0]),
+    hasFrontline: true
+  },
+  vinnytsia: {
+    geometry: ee.Geometry.Rectangle([27.6, 47.9, 28.4, 48.6]),
+    hasFrontline: false
+  },
+  kharkiv: {
+    geometry: ee.Geometry.Rectangle([36.0, 49.5, 37.5, 50.5]),
+    hasFrontline: true
+  },
+  donetsk: {
+    geometry: ee.Geometry.Rectangle([37.0, 47.0, 38.5, 48.5]),
+    hasFrontline: true
+  },
+  luhansk: {
+    geometry: ee.Geometry.Rectangle([38.0, 48.0, 39.5, 49.5]),
+    hasFrontline: true
+  },
+  zaporizhzhia: {
+    geometry: ee.Geometry.Rectangle([35.0, 47.0, 36.5, 48.0]),
+    hasFrontline: true
+  },
+  mariupol: {
+    geometry: ee.Geometry.Rectangle([37.0, 47.0, 38.0, 47.5]),
+    hasFrontline: true
+  }
 };
 
-// Export structure for future tooling (not used directly in GEE)
+/**
+ * Liste aller verfügbaren Regionenschlüssel.
+ */
+var regionKeys = Object.keys(regionDefs);
+
+/**
+ * Prüft, ob ein Regionsname definiert ist.
+ * @param {string} name
+ * @returns {boolean}
+ */
+function isValidRegion(name) {
+  return regionDefs.hasOwnProperty(name);
+}
+
+// Exportkonzepte für Build (konzeptionell)
 exports.regionDefs = regionDefs;
+exports.regionKeys = regionKeys;
+exports.isValidRegion = isValidRegion;
+
+
+/**
+ * Zentrale Konfiguration für NDVI-Z-Analyse.
+ */
+var config = {
+  // Zeitkonfiguration
+  baselineYears: [2018, 2019, 2020, 2021],
+  analysisYears: [2022, 2023, 2024],
+  analysisMonths: [5, 6], // Mai–Juni
+
+  // Skalen & GEE-Limits
+  scale: 100,
+  maxPixels: 1e9,
+
+  // Visualisierung von Z-Werten
+  zClampRange: [-5, 5],
+  zDisplayRange: [-2, 2],
+  zPalette: [
+    '#a50026', '#f46d43', '#fdae61',
+    '#ffffbf', '#d9ef8b', '#66bd63', '#1a9850'
+  ],
+
+  // Cropland-Maske (Global Food Security Analysis Data)
+  croplandSource: 'USGS/GFSAD1000_V1',
+
+  // Frontline-Vektordaten nach Jahr
+  frontlineAssets: {
+    2022: 'projects/ndvi-comparison-ukr/assets/frontline_2022-06-30',
+    2023: 'projects/ndvi-comparison-ukr/assets/frontline_2023-06-30',
+    2024: 'projects/ndvi-comparison-ukr/assets/frontline_2024-06-30'
+  }
+};
+
+// Konzeptionelle Exporte
+exports.config = config;
 
 
 // gee/logic/ndvi.js
@@ -64,132 +137,129 @@ function getNDVISeason(year, region) {
 exports.getNDVISeason = getNDVISeason;
 
 
-// gee/logic/zscore.js
-
 /**
- * Calculate NDVI baseline (median and stdDev) from a list of years.
- * Uses cropland mask to focus on relevant pixels.
+ * Berechnet NDVI-Baseline (Median und StdDev) aus mehreren Jahren.
+ * Optionaler Funktionsparameter für NDVI-Zugriff (testbar).
  * @param {number[]} years 
  * @param {ee.Geometry} region 
  * @param {ee.Image} croplandMask 
- * @param {function} getNDVISeason 
+ * @param {function} getNDVI [optional]
  * @returns {{median: ee.Image, stdDev: ee.Image}}
  */
-function calculateBaseline(years, region, croplandMask) {
-  var baseline = ee.ImageCollection(years.map(function(y) {
+function calculateBaseline(years, region, croplandMask, getNDVI) {
+  var getNDVISeason = getNDVI || exports.getNDVISeason;
+
+  var baseline = ee.ImageCollection(years.map(function (y) {
     return getNDVISeason(y, region).median().updateMask(croplandMask);
   }));
+
+  var reduced = baseline.reduce(ee.Reducer.median().combine({
+    reducer2: ee.Reducer.stdDev(),
+    sharedInputs: true
+  }));
+
   return {
-    median: baseline.reduce(ee.Reducer.median()),
-    stdDev: baseline.reduce(ee.Reducer.stdDev())
+    median: reduced.select('NDVI_median'),
+    stdDev: reduced.select('NDVI_stdDev')
   };
 }
 
-
 /**
- * Compute corrected Z-score image for a given year.
- * Subtracts Vinnytsia reference Z from Kherson raw Z.
- * @param {ee.Image} ndviImg 
- * @param {ee.Image} baselineMedian 
- * @param {ee.Image} baselineStdDev 
- * @param {number} vinnytsiaZ 
- * @param {ee.Geometry} region 
+ * Berechnet den Z-Wert aus NDVI, Median, StdDev.
+ * @param {ee.Image} ndvi 
+ * @param {ee.Image} median 
+ * @param {ee.Image} stdDev 
  * @returns {ee.Image}
  */
-function computeZCorrected(ndviImg, baselineMedian, baselineStdDev, vinnytsiaZ, region) {
-  var z_kh = ndviImg.subtract(baselineMedian).divide(baselineStdDev.add(0.0001));
-  var z_vinnytsia_img = ee.Image.constant(vinnytsiaZ).clip(region);
-  return z_kh.subtract(z_vinnytsia_img).rename('Z_Corrected');
+function calculateZ(ndvi, median, stdDev) {
+  return ndvi.subtract(median).divide(stdDev.add(0.0001)).rename('Z');
 }
 
-// Conceptual exports
+/**
+ * Berechnet Z-Wert-Bild für eine Region und ein Jahr.
+ * @param {number} year 
+ * @param {ee.Geometry} region 
+ * @param {ee.Image} croplandMask
+ * @returns {ee.Image}
+ */
+function calculateZImage(year, region, croplandMask) {
+  var baseline = calculateBaseline(config.baselineYears, region, croplandMask);
+  var ndvi = getNDVISeason(year, region).median().updateMask(croplandMask);
+  return calculateZ(ndvi, baseline.median, baseline.stdDev);
+}
+
+// Konzeptuelle Exporte
 exports.calculateBaseline = calculateBaseline;
-exports.computeZCorrected = computeZCorrected;
+exports.calculateZ = calculateZ;
+exports.calculateZImage = calculateZImage;
 
-
-// gee/logic/zscore_visual.js
 
 /**
- * Clamp and display the corrected Z-score image on the map.
+ * Visualisiert das korrigierte Z-Bild auf der Karte.
  * @param {ee.Image} zCorrectedImg 
  * @param {string} label 
+ * @returns {ee.Image}
  */
 function showZCorrectedLayer(zCorrectedImg, label) {
-  var z_clipped = zCorrectedImg.clamp(-5, 5);
+  var z_clipped = zCorrectedImg.clamp(config.zClampRange[0], config.zClampRange[1]);
   Map.addLayer(z_clipped, {
-    min: -2,
-    max: 2,
-    palette: [
-      '#a50026', '#f46d43', '#fdae61',
-      '#ffffbf', '#d9ef8b', '#66bd63', '#1a9850'
-    ]
+    min: config.zDisplayRange[0],
+    max: config.zDisplayRange[1],
+    palette: config.zPalette
   }, label);
   return z_clipped;
 }
 
 /**
- * Generate histogram chart of Z-corrected NDVI values.
- * Requires Vinnytsia NDVI mean and std for label annotation.
+ * Zeigt ein Histogramm der Z-Werte im gegebenen Bereich.
  * @param {ee.Image} zImage 
  * @param {ee.Geometry} region 
  * @param {number} year 
- * @param {{mean: number, std: number}} vinnytsiaStats 
  */
-function renderZHistogram(zImage, region, year, vinnytsiaStats) {
+function renderZHistogram(zImage, region, year) {
+  print('🟡 Histogramm wird berechnet...');
   zImage.reduceRegion({
-    reducer: ee.Reducer.histogram({maxBuckets: 500}),
+    reducer: ee.Reducer.histogram({ maxBuckets: 500 }),
     geometry: region,
-    scale: 100,
-    maxPixels: 1e9
-  }).get('Z_Corrected').evaluate(function(hist) {
-    if (!hist) return;
+    scale: config.scale,
+    maxPixels: config.maxPixels
+  }).get('Z_Corrected').evaluate(function (hist) {
+    if (!hist) {
+      print('⚠️ Kein Histogramm berechenbar.');
+      return;
+    }
 
     var z_vals = hist.bucketMeans;
     var counts = hist.histogram;
-    var mean = vinnytsiaStats.mean;
-    var std = vinnytsiaStats.std;
 
-    var labels = z_vals.map(function(z) {
-      var ndvi = z * std + mean;
-      return z.toFixed(2) + ' (' + ndvi.toFixed(3) + ')';
-    });
-
-    var chart = ui.Chart.array.values({array: [counts], axis: 0})
+    var chart = ui.Chart.array.values({ array: [counts], axis: 0 })
       .setChartType('ColumnChart')
       .setOptions({
         title: 'Z Corrected Histogram ' + year,
         hAxis: {
-          title: 'Z-Wert (NDVI aus Z)',
+          title: 'Z-Wert (differenziert)',
           slantedText: true,
           slantedTextAngle: 90,
-          ticks: z_vals.map(function(z, i) {
-            return {v: z, f: labels[i]};
-          })
+          ticks: z_vals
         },
-        vAxis: {title: 'Pixel Count'},
-        legend: {position: 'none'},
-        bar: {groupWidth: '95%'}
+        vAxis: { title: 'Pixel Count' },
+        legend: { position: 'none' },
+        bar: { groupWidth: '95%' }
       });
 
     print(chart);
   });
 }
 
-// Conceptual exports
+// Konzeptuelle Exporte
 exports.showZCorrectedLayer = showZCorrectedLayer;
 exports.renderZHistogram = renderZHistogram;
 
 
-// gee/logic/frontline.js
-
 /**
  * Frontline asset IDs by year (June snapshots).
  */
-var frontlineAssets = {
-  2022: 'projects/ndvi-comparison-ukr/assets/frontline_2022-06-30',
-  2023: 'projects/ndvi-comparison-ukr/assets/frontline_2023-06-30',
-  2024: 'projects/ndvi-comparison-ukr/assets/frontline_2024-06-30'
-};
+var frontlineAssets = config.frontlineAssets;
 
 /**
  * Converts polygon features into boundary lines (safe version).
@@ -198,9 +268,9 @@ var frontlineAssets = {
  * @returns {ee.FeatureCollection}
  */
 function extractFrontlineLines(fc) {
-  return fc.map(function(feature) {
+  return fc.map(function (feature) {
     var geoms = ee.Geometry(feature.geometry()).geometries();
-    var lines = ee.List(geoms).map(function(g) {
+    var lines = ee.List(geoms).map(function (g) {
       var polygon = ee.Geometry(g);
       var isPolygon = polygon.type().equals('Polygon');
       var outer = ee.Algorithms.If(isPolygon, polygon.coordinates().get(0), null);
@@ -218,91 +288,85 @@ function extractFrontlineLines(fc) {
 /**
  * Load and display frontline for a given year.
  * @param {number} year 
+ * @returns {ee.FeatureCollection|null}
  */
 function showFrontline(year) {
   var assetId = frontlineAssets[year];
+  if (!assetId) {
+    print('⚠️ Kein Frontline-Asset für Jahr:', year);
+    return null;
+  }
   var frontline = ee.FeatureCollection(assetId);
   var frontlineLines = extractFrontlineLines(frontline);
   Map.addLayer(frontlineLines, {
     color: '#1f78b4',
     width: 2
   }, 'Frontline ' + year + '-06-30');
+  return frontlineLines;
 }
 
-// Conceptual exports
+// Konzeptuelle Exporte
 exports.showFrontline = showFrontline;
 exports.frontlineAssets = frontlineAssets;
 
 
-// gee/ui/app.js
+// gee/ui/app.js (refactored for dual Z-standardization)
 
-/**
- * Main UI orchestration for NDVI Z-score analysis.
- * Allows dynamic selection of analysis and comparison region.
- * Computes Z-correction dynamically based on comparison NDVI.
- */
-
-// UI elements
+// UI controls
 var regionSelect = ui.Select({
-  items: Object.keys(regionDefs),
+  items: regionKeys,
   placeholder: 'Select analysis region'
 });
 
 var compSelect = ui.Select({
-  items: Object.keys(regionDefs),
+  items: regionKeys,
   placeholder: 'Select comparison region'
 });
 
 var yearSelect = ui.Select({
-  items: ['2022', '2023', '2024'],
+  items: config.analysisYears.map(String),
   placeholder: 'Select year'
 });
 
 var runButton = ui.Button({
   label: 'Run Analysis',
-  onClick: function() {
+  onClick: function () {
     var regionName = regionSelect.getValue();
     var compName = compSelect.getValue();
     var year = parseInt(yearSelect.getValue(), 10);
-    if (!regionName || !compName || !year) {
-      print('⚠️ Please select region, comparison, and year.');
+
+    if (!isValidRegion(regionName) || !isValidRegion(compName) || !year) {
+      print('⚠️ Please select valid regions and year.');
       return;
     }
 
-    var region = regionDefs[regionName];
-    var compRegion = regionDefs[compName];
+    var region = regionDefs[regionName].geometry;
+    var compRegion = regionDefs[compName].geometry;
     Map.centerObject(region, 8);
 
-    var cropland = ee.Image('USGS/GFSAD1000_V1');
-    var croplandMask = cropland.gt(0).clip(region);
+    // Cropland masks
+    var cropland = ee.Image(config.croplandSource);
+    var maskA = cropland.gt(0).clip(region);
+    var maskB = cropland.gt(0).clip(compRegion);
 
-    var baseline = calculateBaseline([2018, 2019, 2020, 2021], region, croplandMask);
-    var ndvi = getNDVISeason(year, region).median().updateMask(croplandMask);
+    // Z images (region-wise standardized)
+    var zA = calculateZImage(year, region, maskA);
+    var zB = calculateZImage(year, compRegion, maskB);
 
-    var ndvi_comp = getNDVISeason(year, compRegion).median();
-    var z_comp = ndvi_comp.subtract(baseline.median)
-                          .divide(baseline.stdDev.add(0.0001))
-                          .rename('Z_Ref');
+    // Z correction: A - B
+    var zCorr = zA.subtract(zB).rename('Z_Corrected');
+    var clipped = showZCorrectedLayer(zCorr, 'Z Corrected ' + year);
 
-    var z_comp_mean = z_comp.reduceRegion({
-      reducer: ee.Reducer.mean(),
-      geometry: compRegion,
-      scale: 100,
-      maxPixels: 1e9
-    }).get('Z_Ref');
+    renderZHistogram(clipped, region, year, null); // no vinnytsiaStats needed
 
-z_comp_mean.evaluate(function(z_val) {
-  var zImage = computeZCorrected(ndvi, baseline.median, baseline.stdDev, z_val, region);
-  var clipped = showZCorrectedLayer(zImage, 'Z Corrected ' + year);
-  renderZHistogram(clipped, region, year, null);
-  showFrontline(year);
-}); // closes .evaluate()
-
-  } // ✅ ← this closes the .onClick function
+    if (config.frontlineAssets[year]) {
+      showFrontline(year);
+    } else {
+      print('ℹ️ No frontline data for year', year);
+    }
+  }
 });
 
-
-// Layout
 // Layout
 var panel = ui.Panel({
   widgets: [
@@ -312,8 +376,7 @@ var panel = ui.Panel({
     ui.Label('Year:'), yearSelect,
     runButton
   ],
-  style: {width: '300px'}
+  style: { width: '300px' }
 });
-
 
 ui.root.insert(0, panel);

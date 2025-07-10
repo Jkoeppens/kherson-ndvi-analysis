@@ -1,13 +1,7 @@
-// gee/logic/frontline.js
-
 /**
  * Frontline asset IDs by year (June snapshots).
  */
-var frontlineAssets = {
-  2022: 'projects/ndvi-comparison-ukr/assets/frontline_2022-06-30',
-  2023: 'projects/ndvi-comparison-ukr/assets/frontline_2023-06-30',
-  2024: 'projects/ndvi-comparison-ukr/assets/frontline_2024-06-30'
-};
+var frontlineAssets = config.frontlineAssets;
 
 /**
  * Converts polygon features into boundary lines (safe version).
@@ -16,9 +10,9 @@ var frontlineAssets = {
  * @returns {ee.FeatureCollection}
  */
 function extractFrontlineLines(fc) {
-  return fc.map(function(feature) {
+  return fc.map(function (feature) {
     var geoms = ee.Geometry(feature.geometry()).geometries();
-    var lines = ee.List(geoms).map(function(g) {
+    var lines = ee.List(geoms).map(function (g) {
       var polygon = ee.Geometry(g);
       var isPolygon = polygon.type().equals('Polygon');
       var outer = ee.Algorithms.If(isPolygon, polygon.coordinates().get(0), null);
@@ -36,17 +30,23 @@ function extractFrontlineLines(fc) {
 /**
  * Load and display frontline for a given year.
  * @param {number} year 
+ * @returns {ee.FeatureCollection|null}
  */
 function showFrontline(year) {
   var assetId = frontlineAssets[year];
+  if (!assetId) {
+    print('⚠️ Kein Frontline-Asset für Jahr:', year);
+    return null;
+  }
   var frontline = ee.FeatureCollection(assetId);
   var frontlineLines = extractFrontlineLines(frontline);
   Map.addLayer(frontlineLines, {
     color: '#1f78b4',
     width: 2
   }, 'Frontline ' + year + '-06-30');
+  return frontlineLines;
 }
 
-// Conceptual exports
+// Konzeptuelle Exporte
 exports.showFrontline = showFrontline;
 exports.frontlineAssets = frontlineAssets;
