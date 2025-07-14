@@ -32,7 +32,7 @@ var config = {
  */
 var regionDefs = {
   kherson: {
-    geometry: ee.Geometry.Rectangle([32.0, 46.0, 33.0, 47.0]),
+    geometry: ee.Geometry.Rectangle([28.1, 49.3, 29.1, 49.9]),
     hasFrontline: true
   },
   vinnytsia: {
