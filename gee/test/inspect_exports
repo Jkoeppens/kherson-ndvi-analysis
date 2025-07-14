@@ -1,0 +1,38 @@
+// 📁 Asset base path
+var assetBase = 'projects/ndvi-comparison-ukr/assets/ndvi_exports/';
+
+// 🧭 Define regions (replace or import your real ones)
+var regionDefs = {
+  kherson: ee.Geometry.Rectangle([32, 46, 34, 48]),
+  vinnytsia: ee.Geometry.Rectangle([27, 48, 29, 49])
+};
+
+// 🧩 Define config (if not already present)
+var config = {
+  baselineYears: [2019, 2020, 2021],
+  analysisYears: [2022, 2023, 2024],
+  zDisplayRange: [-2, 2],
+  zPalette: [
+    '#a50026', '#f46d43', '#fdae61',
+    '#ffffbf', '#d9ef8b', '#66bd63', '#1a9850'
+  ]
+};
+
+// 🧮 Combine all years
+var allYears = config.baselineYears.concat(config.analysisYears);
+
+// 🔍 Loop through regions and years
+Object.keys(regionDefs).forEach(function(regionKey) {
+  var region = regionDefs[regionKey];
+  
+  allYears.forEach(function(year) {
+    var assetId = assetBase + 'NDVI_' + regionKey + '_' + year;
+    var image = ee.Image(assetId).select('NDVI');
+
+    
+    Map.addLayer(image, {min: 0, max: 0.8, palette: ['white', 'green']}, 'NDVI ' + regionKey + ' ' + year);
+  });
+});
+
+// 🗺️ Center map to first region
+Map.centerObject(regionDefs.kherson, 7);

@@ -1,55 +1,74 @@
 /**
- * Berechnet NDVI-Baseline (Median und StdDev) aus mehreren Jahren.
- * Optionaler Funktionsparameter für NDVI-Zugriff (testbar).
- * @param {number[]} years 
- * @param {ee.Geometry} region 
- * @param {ee.Image} croplandMask 
- * @param {function} getNDVI [optional]
- * @returns {{median: ee.Image, stdDev: ee.Image}}
+ * Berechnet Z-Scores (standardisierte Abweichungen) für exportierte NDVI-Bilder.
+ * Z = (NDVI_t - μ_baseline) / σ_baseline
+ * 
+ * Voraussetzung: Alle NDVI-Bilder existieren als Assets.
  */
-function calculateBaseline(years, region, croplandMask, getNDVI) {
-  var getNDVISeason = getNDVI || exports.getNDVISeason;
 
-  var baseline = ee.ImageCollection(years.map(function (y) {
-    return getNDVISeason(y, region).median().updateMask(croplandMask);
-  }));
+// 📁 Pfad zum NDVI-Ordner
+var assetBase = 'projects/ndvi-comparison-ukr/assets/ndvi_exports/';
 
-  var reduced = baseline.reduce(ee.Reducer.median().combine({
-    reducer2: ee.Reducer.stdDev(),
-    sharedInputs: true
-  }));
-
-  return {
-    median: reduced.select('NDVI_median'),
-    stdDev: reduced.select('NDVI_stdDev')
-  };
+/**
+ * Lädt ein NDVI-Asset.
+ * @param {string} regionKey
+ * @param {number} year
+ * @returns {ee.Image}
+ */
+function loadNDVIAsset(regionKey, year) {
+  var assetId = assetBase + 'NDVI_' + regionKey + '_' + year;
+  return ee.Image(assetId).rename('NDVI');
 }
 
 /**
- * Berechnet den Z-Wert aus NDVI, Median, StdDev.
- * @param {ee.Image} ndvi 
- * @param {ee.Image} median 
- * @param {ee.Image} stdDev 
- * @returns {ee.Image}
+ * Berechnet μ und σ aus der Baseline für eine Region.
+ * @param {string} regionKey
+ * @returns {{mean: ee.Image, stdDev: ee.Image}}
  */
-function calculateZ(ndvi, median, stdDev) {
-  return ndvi.subtract(median).divide(stdDev.add(0.0001)).rename('Z');
+function getNDVIBaselineStats(regionKey) {
+  var imgs = config.baselineYears.map(function(year) {
+    return loadNDVIAsset(regionKey, year);
+  });
+
+  var collection = ee.ImageCollection(imgs);
+  var mean = collection.mean().rename('NDVI_mean');
+  var stdDev = collection.reduce(ee.Reducer.stdDev()).rename('NDVI_std');
+
+  return {mean: mean, stdDev: stdDev};
 }
 
 /**
- * Berechnet Z-Wert-Bild für eine Region und ein Jahr.
- * @param {number} year 
- * @param {ee.Geometry} region 
- * @param {ee.Image} croplandMask
+ * Gibt ein Z-Score-Bild für ein bestimmtes Jahr zurück.
+ * @param {string} regionKey
+ * @param {number} year
  * @returns {ee.Image}
  */
-function calculateZImage(year, region, croplandMask) {
-  var baseline = calculateBaseline(config.baselineYears, region, croplandMask);
-  var ndvi = getNDVISeason(year, region).median().updateMask(croplandMask);
-  return calculateZ(ndvi, baseline.median, baseline.stdDev);
-}
+function getNDVIZScore(regionKey, year) {
+  var ndvi = loadNDVIAsset(regionKey, year);
+  var stats = getNDVIBaselineStats(regionKey);
 
-// Konzeptuelle Exporte
-exports.calculateBaseline = calculateBaseline;
-exports.calculateZ = calculateZ;
-exports.calculateZImage = calculateZImage;
+  var z = ndvi.subtract(stats.mean)
+              .divide(stats.stdDev)
+              .rename('NDVI_Z');
+
+  return z;
+}
+/**
+ * Gibt ein Z-Score-Bild für ein bestimmtes Jahr zurück,
+ * maskiert aber alle Pixel mit instabiler Standardabweichung.
+ * @param {string} regionKey
+ * @param {number} year
+ * @param {{mean: ee.Image, stdDev: ee.Image}} [statsDict]
+ * @returns {ee.Image}
+ */
+function getSafeZScore(regionKey, year, statsDict) {
+  var ndvi = loadNDVIAsset(regionKey, year);
+  var stats = statsDict || getNDVIBaselineStats(regionKey);
+
+  var minStdDev = 0.01;  // 🔧 Schwellenwert für gültige σ-Werte
+  var valid = stats.stdDev.gte(minStdDev);  // Maske
+
+  return ndvi.subtract(stats.mean)
+             .divide(stats.stdDev)
+             .updateMask(valid)
+             .rename('NDVI_Z');
+}

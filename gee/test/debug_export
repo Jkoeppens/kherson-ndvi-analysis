@@ -1,0 +1,21 @@
+// 🔍 Dummy-Region und Jahr zum Debuggen
+var debugRegionKey = 'kherson';
+var debugYear = 2022;
+
+// 🧭 Region laden
+var debugRegion = regionDefs[debugRegionKey];
+
+// 🖼️ NDVI berechnen
+var debugNDVI = getYearlyNDVI(debugYear, debugRegion);
+
+// ➗ NDVI und Beobachtungen extrahieren
+var ndviBand = debugNDVI.select('NDVI').rename('NDVI');
+var obsBand = debugNDVI.select('valid_obs').rename('valid_obs');
+
+// 🗺️ Karte anzeigen
+Map.centerObject(debugRegion, 8);
+Map.addLayer(ndviBand, {min: 0, max: 0.8, palette: ['white', 'green']}, 'NDVI ' + debugYear);
+Map.addLayer(obsBand, {min: 0, max: 20, palette: ['black', 'blue', 'cyan']}, 'Valid Observations ' + debugYear);
+
+// 📤 Export anstoßen
+exportNDVIToAsset(debugRegionKey, debugYear);

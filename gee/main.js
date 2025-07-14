@@ -1,6 +1,32 @@
 // Auto-generated main.js for GEE
-// Generated on Fri Jul 11 00:56:08 CEST 2025
+// Generated on Mon Jul 14 19:20:03 CEST 2025
 
+// --- gee/logic/config.js ---
+var config = {
+  baselineYears: [2019, 2020, 2021],
+  analysisYears: [2022, 2023, 2024],
+  analysisMonths: [5, 6], // Mai–Juni
+  scale: 100,
+  maxPixels: 1e9,
+  minStdDev: 0.01, // Mindestwert für σ zur Maskierung instabiler Pixel
+  zClampRange: [-5, 5],
+  zDisplayRange: [-2, 2],
+  zPalette: [
+    '#a50026', '#f46d43', '#fdae61',
+    '#ffffbf', '#d9ef8b', '#66bd63', '#1a9850'
+  ],
+  croplandSource: 'USGS/GFSAD1000_V1',
+  useCroplandMask: false,
+  
+  frontlineAssets: {
+    2022: 'projects/ndvi-comparison-ukr/assets/frontline_2022-06-30',
+    2023: 'projects/ndvi-comparison-ukr/assets/frontline_2023-06-30',
+    2024: 'projects/ndvi-comparison-ukr/assets/frontline_2024-06-30'
+  }
+};
+
+
+// --- gee/logic/regions.js ---
 /**
  * Geometrien und Metadaten für NDVI/Z-Analyse-Regionen.
  */
@@ -55,207 +81,326 @@ exports.regionKeys = regionKeys;
 exports.isValidRegion = isValidRegion;
 
 
-/**
- * Zentrale Konfiguration für NDVI-Z-Analyse.
- */
-var config = {
-  // Zeitkonfiguration
-  baselineYears: [2018, 2019, 2020, 2021],
-  analysisYears: [2022, 2023, 2024],
-  analysisMonths: [5, 6], // Mai–Juni
+// --- gee/logic/ndvi.js ---
+function maskSCL(image) {
+  var scl = image.select('SCL');
+  var mask = scl.neq(3).and(scl.neq(6)).and(scl.neq(7)).and(scl.neq(8));
+  return image.updateMask(mask);
+}
 
-  // Skalen & GEE-Limits
-  scale: 100,
-  maxPixels: 1e9,
-
-  // Visualisierung von Z-Werten
-  zClampRange: [-5, 5],
-  zDisplayRange: [-2, 2],
-  zPalette: [
-    '#a50026', '#f46d43', '#fdae61',
-    '#ffffbf', '#d9ef8b', '#66bd63', '#1a9850'
-  ],
-
-  // Cropland-Maske (Global Food Security Analysis Data)
-  croplandSource: 'USGS/GFSAD1000_V1',
-
-  // Frontline-Vektordaten nach Jahr
-  frontlineAssets: {
-    2022: 'projects/ndvi-comparison-ukr/assets/frontline_2022-06-30',
-    2023: 'projects/ndvi-comparison-ukr/assets/frontline_2023-06-30',
-    2024: 'projects/ndvi-comparison-ukr/assets/frontline_2024-06-30'
-  }
-};
-
-// Konzeptionelle Exporte
-exports.config = config;
-
-
-// gee/logic/ndvi.js
-
-/**
- * Apply cloud mask based on Sentinel-2 SCL band.
- * Removes cloud shadows, clouds, and cirrus.
- * @param {ee.Image} img 
- * @returns {ee.Image}
- */
-function maskSCL(img) {
-  var scl = img.select('SCL');
-  var mask = scl.neq(3).and(scl.neq(7)).and(scl.neq(8));
-  return img.updateMask(mask);
+function addNDVI(image) {
+  return image.addBands(
+    image.normalizedDifference(['B8', 'B4']).rename('NDVI')
+  );
 }
 
 /**
- * Adds NDVI band using Sentinel-2 bands.
- * @param {ee.Image} img 
+ * Berechnet das jährliche NDVI-Medianbild für eine Region.
+ * @param {number} year
+ * @param {ee.Geometry} region
  * @returns {ee.Image}
  */
-function addNDVI(img) {
-  return img.normalizedDifference(['B8', 'B4']).rename('NDVI');
+function getYearlyNDVI(year, region) {
+  // 📆 Filtere Sentinel-2-Bilder nach Jahr und Region
+  var start = ee.Date.fromYMD(year, config.analysisMonths.start, 1);
+  var end = ee.Date.fromYMD(year, config.analysisMonths.end, 1).advance(1, 'month');
+  var collection = ee.ImageCollection('COPERNICUS/S2_SR')
+    .filterBounds(region)
+    .filterDate(start, end)
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 80));
+
+  print('📂 Rohbilder (Anzahl):', collection.size());
+
+  // 🧼 Maskiere Wolken mit SCL-Band
+  var masked = collection.map(maskSCL);
+
+  // 🌿 Berechne NDVI für jedes Bild
+  var withNDVI = masked.map(addNDVI);
+
+  // 📊 Median NDVI
+  var ndviMedian = withNDVI.select('NDVI').median().rename('NDVI');
+
+  // 🔢 Anzahl gültiger Beobachtungen pro Pixel
+  var validObs = withNDVI.select('NDVI')
+    .reduce(ee.Reducer.count())
+    .rename('valid_obs');
+
+  // 🌾 Cropland-Maske (optional)
+  var cropland = ee.Image('USGS/GFSAD1000_V1').select('landcover');
+  var croplandMask = cropland.eq(1);  // Nur bewässertes Farmland
+
+  // 🧪 Maske anwenden (optional – hier: deaktiviert)
+  var useCroplandMask = config.useCroplandMask;  // true oder false
+  var finalNDVI = ee.Image(
+    ee.Algorithms.If(useCroplandMask, ndviMedian.updateMask(croplandMask), ndviMedian)
+  );
+
+  // 📦 Ergebnis als NDVI-Bild (1 Band)
+  return finalNDVI.set({
+    'system:time_start': start.millis(),
+    'region_name': region
+  });
 }
 
-/**
- * Get NDVI image collection for a specific region and year.
- * Filters for May–June and applies SCL masking.
- * @param {number} year 
- * @param {ee.Geometry} region 
- * @returns {ee.ImageCollection}
- */
-function getNDVISeason(year, region) {
-  var start = ee.Date.fromYMD(year, 5, 1);
-  var end = ee.Date.fromYMD(year, 7, 1);
 
-  return ee.ImageCollection('COPERNICUS/S2_SR')
+function countValidNDVIObservations(year, region, months) {
+  var m = months || config.analysisMonths;
+  var start = ee.Date.fromYMD(year, m[0], 1);
+  var end = ee.Date.fromYMD(year, m[1] + 1, 1);
+
+  var collection = ee.ImageCollection('COPERNICUS/S2_SR')
     .filterBounds(region)
     .filterDate(start, end)
     .map(maskSCL)
     .map(addNDVI)
     .select('NDVI');
+
+  return collection.map(function(img) {
+      return img.mask().rename('valid').uint8();
+    })
+    .sum()
+    .rename('valid_obs');
 }
 
-// Conceptual export for version control
-exports.getNDVISeason = getNDVISeason;
 
+// --- gee/logic/export.js ---
+/**
+ * Kombiniert Einzel- und Massenexport von NDVI-Jahreskarten mit Asset-Existenzprüfung.
+ * 🔧 Voraussetzung: regionDefs, config, getYearlyNDVI, isValidRegion müssen eingebunden sein.
+ */
 
 /**
- * Berechnet NDVI-Baseline (Median und StdDev) aus mehreren Jahren.
- * Optionaler Funktionsparameter für NDVI-Zugriff (testbar).
- * @param {number[]} years 
- * @param {ee.Geometry} region 
- * @param {ee.Image} croplandMask 
- * @param {function} getNDVI [optional]
- * @returns {{median: ee.Image, stdDev: ee.Image}}
+ * Prüft, ob ein Asset bereits existiert (Client-seitig).
+ * 
+ * @param {string} assetId
+ * @param {function(boolean)} callback – true, wenn vorhanden; sonst false
  */
-function calculateBaseline(years, region, croplandMask, getNDVI) {
-  var getNDVISeason = getNDVI || exports.getNDVISeason;
-
-  var baseline = ee.ImageCollection(years.map(function (y) {
-    return getNDVISeason(y, region).median().updateMask(croplandMask);
-  }));
-
-  var reduced = baseline.reduce(ee.Reducer.median().combine({
-    reducer2: ee.Reducer.stdDev(),
-    sharedInputs: true
-  }));
-
-  return {
-    median: reduced.select('NDVI_median'),
-    stdDev: reduced.select('NDVI_stdDev')
-  };
-}
-
-/**
- * Berechnet den Z-Wert aus NDVI, Median, StdDev.
- * @param {ee.Image} ndvi 
- * @param {ee.Image} median 
- * @param {ee.Image} stdDev 
- * @returns {ee.Image}
- */
-function calculateZ(ndvi, median, stdDev) {
-  return ndvi.subtract(median).divide(stdDev.add(0.0001)).rename('Z');
-}
-
-/**
- * Berechnet Z-Wert-Bild für eine Region und ein Jahr.
- * @param {number} year 
- * @param {ee.Geometry} region 
- * @param {ee.Image} croplandMask
- * @returns {ee.Image}
- */
-function calculateZImage(year, region, croplandMask) {
-  var baseline = calculateBaseline(config.baselineYears, region, croplandMask);
-  var ndvi = getNDVISeason(year, region).median().updateMask(croplandMask);
-  return calculateZ(ndvi, baseline.median, baseline.stdDev);
-}
-
-// Konzeptuelle Exporte
-exports.calculateBaseline = calculateBaseline;
-exports.calculateZ = calculateZ;
-exports.calculateZImage = calculateZImage;
-
-
-/**
- * Visualisiert das korrigierte Z-Bild auf der Karte.
- * @param {ee.Image} zCorrectedImg 
- * @param {string} label 
- * @returns {ee.Image}
- */
-function showZCorrectedLayer(zCorrectedImg, label) {
-  var z_clipped = zCorrectedImg.clamp(config.zClampRange[0], config.zClampRange[1]);
-  Map.addLayer(z_clipped, {
-    min: config.zDisplayRange[0],
-    max: config.zDisplayRange[1],
-    palette: config.zPalette
-  }, label);
-  return z_clipped;
-}
-
-/**
- * Zeigt ein Histogramm der Z-Werte im gegebenen Bereich.
- * @param {ee.Image} zImage 
- * @param {ee.Geometry} region 
- * @param {number} year 
- */
-function renderZHistogram(zImage, region, year) {
-  print('🟡 Histogramm wird berechnet...');
-  zImage.reduceRegion({
-    reducer: ee.Reducer.histogram({ maxBuckets: 500 }),
-    geometry: region,
-    scale: config.scale,
-    maxPixels: config.maxPixels
-  }).get('Z_Corrected').evaluate(function (hist) {
-    if (!hist) {
-      print('⚠️ Kein Histogramm berechenbar.');
-      return;
-    }
-
-    var z_vals = hist.bucketMeans;
-    var counts = hist.histogram;
-
-    var chart = ui.Chart.array.values({ array: [counts], axis: 0 })
-      .setChartType('ColumnChart')
-      .setOptions({
-        title: 'Z Corrected Histogram ' + year,
-        hAxis: {
-          title: 'Z-Wert (differenziert)',
-          slantedText: true,
-          slantedTextAngle: 90,
-          ticks: z_vals
-        },
-        vAxis: { title: 'Pixel Count' },
-        legend: { position: 'none' },
-        bar: { groupWidth: '95%' }
-      });
-
-    print(chart);
+function assetExists(assetId, callback) {
+  ee.data.getAsset(assetId, function(asset) {
+    callback(asset !== null);
+  }, function(err) {
+    // Fehler bedeutet meist: Asset existiert nicht
+    callback(false);
   });
 }
 
-// Konzeptuelle Exporte
-exports.showZCorrectedLayer = showZCorrectedLayer;
-exports.renderZHistogram = renderZHistogram;
+/**
+ * Exportiert ein NDVI-Bild als Asset, wenn es noch nicht existiert.
+ * 
+ * @param {string} regionKey – z. B. 'kherson'
+ * @param {number} year – z. B. 2020
+ */
+function exportNDVIToAssetIfNotExists(regionKey, year) {
+  if (!isValidRegion(regionKey)) {
+    print('❌ Ungültiger Regionsname:', regionKey);
+    return;
+  }
+
+  var exportId = 'NDVI_' + regionKey + '_' + year;
+  var assetPath = 'projects/ndvi-comparison-ukr/assets/ndvi_exports/' + exportId;
+
+  assetExists(assetPath, function(exists) {
+    if (exists) {
+      print('⏭️  Bereits vorhanden, Export übersprungen:', assetPath);
+    } else {
+      var region = regionDefs[regionKey];
+      var ndvi = getYearlyNDVI(year, region);
+
+      Export.image.toAsset({
+        image: ndvi,
+        description: exportId,
+        assetId: assetPath,
+        region: region,
+        scale: config.scale,
+        maxPixels: config.maxPixels
+      });
+
+      print('📤 Export gestartet:', assetPath);
+    }
+  });
+}
+
+/**
+ * Batch-Export für beliebige Regionen und Jahre.
+ * Muss manuell mit gewünschtem Input aufgerufen werden.
+ * 
+ * @param {string[]} regionList – z. B. ['kherson', 'vinnytsia']
+ * @param {number[]} yearList – z. B. [2020, 2023]
+ */
+function exportNDVIBatch(regionList, yearList) {
+  regionList.forEach(function(regionKey) {
+    if (!isValidRegion(regionKey)) {
+      print('⚠️ Ungültiger Regionsname übersprungen:', regionKey);
+      return;
+    }
+
+    yearList.forEach(function(year) {
+      exportNDVIToAssetIfNotExists(regionKey, year);
+    });
+  });
+
+  print('✅ NDVI-Exporte initialisiert für:', regionList, 'Jahre:', yearList);
+}
+
+// 🟡 Aufrufbeispiel (zum Debuggen oder aus UI):
+// exportNDVIBatch(['kherson', 'vinnytsia'], [2020, 2021, 2022]);
 
 
+// --- gee/logic/zscore.js ---
+/**
+ * Berechnet Z-Scores (standardisierte Abweichungen) für exportierte NDVI-Bilder.
+ * Z = (NDVI_t - μ_baseline) / σ_baseline
+ * 
+ * Voraussetzung: Alle NDVI-Bilder existieren als Assets.
+ */
+
+// 📁 Pfad zum NDVI-Ordner
+var assetBase = 'projects/ndvi-comparison-ukr/assets/ndvi_exports/';
+
+/**
+ * Lädt ein NDVI-Asset.
+ * @param {string} regionKey
+ * @param {number} year
+ * @returns {ee.Image}
+ */
+function loadNDVIAsset(regionKey, year) {
+  var assetId = assetBase + 'NDVI_' + regionKey + '_' + year;
+  return ee.Image(assetId).rename('NDVI');
+}
+
+/**
+ * Berechnet μ und σ aus der Baseline für eine Region.
+ * @param {string} regionKey
+ * @returns {{mean: ee.Image, stdDev: ee.Image}}
+ */
+function getNDVIBaselineStats(regionKey) {
+  var imgs = config.baselineYears.map(function(year) {
+    return loadNDVIAsset(regionKey, year);
+  });
+
+  var collection = ee.ImageCollection(imgs);
+  var mean = collection.mean().rename('NDVI_mean');
+  var stdDev = collection.reduce(ee.Reducer.stdDev()).rename('NDVI_std');
+
+  return {mean: mean, stdDev: stdDev};
+}
+
+/**
+ * Gibt ein Z-Score-Bild für ein bestimmtes Jahr zurück.
+ * @param {string} regionKey
+ * @param {number} year
+ * @returns {ee.Image}
+ */
+function getNDVIZScore(regionKey, year) {
+  var ndvi = loadNDVIAsset(regionKey, year);
+  var stats = getNDVIBaselineStats(regionKey);
+
+  var z = ndvi.subtract(stats.mean)
+              .divide(stats.stdDev)
+              .rename('NDVI_Z');
+
+  return z;
+}
+/**
+ * Gibt ein Z-Score-Bild für ein bestimmtes Jahr zurück,
+ * maskiert aber alle Pixel mit instabiler Standardabweichung.
+ * @param {string} regionKey
+ * @param {number} year
+ * @param {{mean: ee.Image, stdDev: ee.Image}} [statsDict]
+ * @returns {ee.Image}
+ */
+function getSafeZScore(regionKey, year, statsDict) {
+  var ndvi = loadNDVIAsset(regionKey, year);
+  var stats = statsDict || getNDVIBaselineStats(regionKey);
+
+  var minStdDev = 0.01;  // 🔧 Schwellenwert für gültige σ-Werte
+  var valid = stats.stdDev.gte(minStdDev);  // Maske
+
+  return ndvi.subtract(stats.mean)
+             .divide(stats.stdDev)
+             .updateMask(valid)
+             .rename('NDVI_Z');
+}
+
+
+// --- gee/logic/exportzdiff.js ---
+function exportZDiff(regionA, regionB, year) {
+  if (!isValidRegion(regionA) || !isValidRegion(regionB)) {
+    print('❌ Ungültige Regionen:', regionA, regionB);
+    return;
+  }
+
+  var exportId = 'ZDIFF_' + regionA + '_minusMean_' + regionB + '_' + year;
+  var assetPath = 'projects/ndvi-comparison-ukr/assets/' + exportId;
+
+  ee.data.getAsset(assetPath, function(asset) {
+    if (asset) {
+      print('⏭️  Bereits vorhanden, Export übersprungen:', assetPath);
+      return;
+    }
+
+    // 📈 Z-Score von Region A (z. B. Kherson)
+    var statsA = getNDVIBaselineStats(regionA);
+    var zA = getSafeZScore(regionA, year, statsA);
+
+    // 📈 Z-Score-Mittelwert von Region B (z. B. Vinnytsia)
+    var statsB = getNDVIBaselineStats(regionB);
+    var ndviB = loadNDVIAsset(regionB, year);
+
+    var zB = ndviB.subtract(statsB.mean)
+                  .divide(statsB.stdDev)
+                  .updateMask(statsB.stdDev.gt(config.minStdDev))
+                  .rename('NDVI_Z');
+
+    var zMeanB = zB.reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: regionDefs[regionB],
+      scale: config.scale,
+      maxPixels: config.maxPixels
+    }).get('NDVI_Z');
+
+    // 📊 Z-Differenz
+    var zDiff = zA.subtract(ee.Number(zMeanB)).rename('Z_Diff');
+
+    // ⚠️ Extremwerte maskieren
+    var maskedDiff = zDiff.updateMask(zDiff.gte(-10).and(zDiff.lte(10)));
+
+    // 📤 Export
+    Export.image.toAsset({
+      image: maskedDiff,
+      description: exportId,
+      assetId: assetPath,
+      region: regionDefs[regionA],
+      scale: config.scale,
+      maxPixels: config.maxPixels
+    });
+
+    print('📤 Export gestartet (Z_Diff):', exportId);
+  });
+}
+/**
+ * Führt Z-Differenz-Exporte für mehrere Jahre aus.
+ * Region A wird pixelbasiert exportiert, Region B fließt als Mittelwert ein.
+ * 
+ * @param {string} regionA – z. B. 'kherson'
+ * @param {string} regionB – z. B. 'vinnytsia'
+ * @param {number[]} years – Liste von Jahren, z. B. [2022, 2023, 2024]
+ */
+function batchExportZDiff(regionA, regionB, years) {
+  if (!isValidRegion(regionA) || !isValidRegion(regionB)) {
+    print('❌ Ungültige Regionen:', regionA, regionB);
+    return;
+  }
+
+  years.forEach(function(year) {
+    exportZDiff(regionA, regionB, year);
+  });
+
+  print('📦 Batch-Z-Diff-Exporte gestartet für:', regionA, 'gegen', regionB, 'Jahre:', years);
+}
+
+
+// --- gee/logic/frontline.js ---
 /**
  * Frontline asset IDs by year (June snapshots).
  */
@@ -310,8 +455,7 @@ exports.showFrontline = showFrontline;
 exports.frontlineAssets = frontlineAssets;
 
 
-// gee/ui/app.js (refactored for dual Z-standardization)
-
+// --- gee/ui/app.js ---
 // UI controls
 var regionSelect = ui.Select({
   items: regionKeys,
@@ -344,21 +488,46 @@ var runButton = ui.Button({
     var compRegion = regionDefs[compName].geometry;
     Map.centerObject(region, 8);
 
-    // Cropland masks
-    var cropland = ee.Image(config.croplandSource);
-    var maskA = cropland.gt(0).clip(region);
-    var maskB = cropland.gt(0).clip(compRegion);
+    // 📊 Z-Score A (Hauptregion, pixelbasiert)
+    var statsA = getNDVIBaselineStats(regionName);
+    var zA = getSafeZScore(regionName, year, statsA);
 
-    // Z images (region-wise standardized)
-    var zA = calculateZImage(year, region, maskA);
-    var zB = calculateZImage(year, compRegion, maskB);
+    // 📉 Z-Mittelwert B (Vergleichsregion)
+    var statsB = getNDVIBaselineStats(compName);
+    var zB_Image = loadNDVIAsset(compName, year)
+      .subtract(statsB.mean)
+      .divide(statsB.stdDev)
+      .updateMask(statsB.stdDev.gt(config.minStdDev))
+      .rename('NDVI_Z');
 
-    // Z correction: A - B
-    var zCorr = zA.subtract(zB).rename('Z_Corrected');
-    var clipped = showZCorrectedLayer(zCorr, 'Z Corrected ' + year);
+    var zB_mean = zB_Image.reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: regionDefs[compName],
+      scale: config.scale,
+      maxPixels: config.maxPixels
+    }).get('NDVI_Z');
 
-    renderZHistogram(clipped, region, year, null); // no vinnytsiaStats needed
+    // 🧮 Differenz berechnen
+    var zDiff = zA.subtract(ee.Number(zB_mean)).rename('Z_Diff');
 
+    // 🎨 Karte anzeigen
+    var zClamped = zDiff.clamp(config.zClampRange[0], config.zClampRange[1]);
+    Map.addLayer(zClamped, {
+      min: config.zDisplayRange[0],
+      max: config.zDisplayRange[1],
+      palette: config.zPalette
+    }, 'Z-Diff (' + regionName + ' vs. ' + compName + ', ' + year + ')');
+
+    // 📉 Histogramm anzeigen
+    var chart = ui.Chart.image.histogram(zDiff, region, config.scale)
+      .setOptions({
+        title: 'Z-Diff Histogramm (' + regionName + ' - mean(' + compName + '), ' + year + ')',
+        hAxis: {title: 'Z-Diff'},
+        vAxis: {title: 'Pixelanzahl'}
+      });
+    print(chart);
+
+    // 🔹 Frontlinie anzeigen
     if (config.frontlineAssets[year]) {
       showFrontline(year);
     } else {
@@ -370,7 +539,7 @@ var runButton = ui.Button({
 // Layout
 var panel = ui.Panel({
   widgets: [
-    ui.Label('NDVI Z-Score Analysis'),
+    ui.Label('NDVI Z-Diff Analysis'),
     ui.Label('Analysis Region:'), regionSelect,
     ui.Label('Comparison Region:'), compSelect,
     ui.Label('Year:'), yearSelect,

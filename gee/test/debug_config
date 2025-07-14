@@ -1,0 +1,15 @@
+/**
+ * Testskript: Konfigurationsprüfung
+ * Modul: gee/config.js
+ */
+
+print('🧪 Konfiguration geladen:', config);
+
+print('Baseline-Jahre:', config.baselineYears);
+print('Analysejahre:', config.analysisYears);
+print('Analysemonate:', config.analysisMonths);
+print('Cropland-Quelle:', config.croplandSource);
+print('Skalierung:', config.scale);
+
+print('Z-Farbenpalette:', config.zPalette);
+print('Frontline-Assets:', config.frontlineAssets);

@@ -1,0 +1,15 @@
+print('📦 Verfügbare Regionen:', regionKeys);
+
+var regionName = 'kherson';
+
+if (!isValidRegion(regionName)) {
+  throw new Error('❌ Ungültiger Regionsname: ' + regionName);
+}
+
+var region = regionDefs[regionName];
+print('✅ Region ausgewählt:', region);
+
+var year = 2020;
+var tileSizeDeg = 0.2;
+
+debugTilingNDVI(year, region, tileSizeDeg);

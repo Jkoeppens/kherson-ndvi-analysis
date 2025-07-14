@@ -20,16 +20,24 @@ function showZCorrectedLayer(zCorrectedImg, label) {
  * @param {ee.Geometry} region 
  * @param {number} year 
  */
+/**
+ * Zeigt ein Histogramm der Z-Werte im gegebenen Bereich.
+ * Gibt spezifische Warnung aus, wenn kein Histogramm berechnet werden kann.
+ * @param {ee.Image} zImage 
+ * @param {ee.Geometry} region 
+ * @param {number} year 
+ */
 function renderZHistogram(zImage, region, year) {
   print('🟡 Histogramm wird berechnet...');
+
   zImage.reduceRegion({
     reducer: ee.Reducer.histogram({ maxBuckets: 500 }),
     geometry: region,
     scale: config.scale,
     maxPixels: config.maxPixels
   }).get('Z_Corrected').evaluate(function (hist) {
-    if (!hist) {
-      print('⚠️ Kein Histogramm berechenbar.');
+    if (!hist || !hist.bucketMeans || !hist.histogram) {
+      print('⚠️ Kein Histogramm berechenbar – wahrscheinlich keine gültigen Pixel im gewählten Gebiet.');
       return;
     }
 
@@ -56,5 +64,4 @@ function renderZHistogram(zImage, region, year) {
 }
 
 // Konzeptuelle Exporte
-exports.showZCorrectedLayer = showZCorrectedLayer;
 exports.renderZHistogram = renderZHistogram;

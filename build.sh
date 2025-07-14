@@ -9,18 +9,20 @@ if [[ "$1" == "--debug" ]]; then
   DEBUG=true
 fi
 
-# Check required files
-required_files=(
-  gee/logic/regions.js
+logic_files=(
   gee/logic/config.js
+  gee/logic/regions.js
   gee/logic/ndvi.js
+  gee/logic/export.js
   gee/logic/zscore.js
-  gee/logic/zscore_visual.js
+  gee/logic/exportzdiff.js
   gee/logic/frontline.js
-  gee/ui/app.js
 )
 
-for file in "${required_files[@]}"; do
+ui_file="gee/ui/app.js"
+
+# Check all required files
+for file in "${logic_files[@]}" "$ui_file"; do
   if [ ! -f "$file" ]; then
     echo "❌ Missing required file: $file"
     exit 1
@@ -33,27 +35,19 @@ echo "// Generated on $(date)" >> $OUTPUT
 $DEBUG && echo "// DEBUG MODE ENABLED" >> $OUTPUT
 echo "" >> $OUTPUT
 
-# Append modules in order
-cat gee/logic/regions.js >> $OUTPUT
-echo -e "\n" >> $OUTPUT
+# Append logic modules
+for file in "${logic_files[@]}"; do
+  echo "// --- $file ---" >> $OUTPUT
+  cat "$file" >> $OUTPUT
+  echo -e "\n" >> $OUTPUT
+done
 
-cat gee/logic/config.js >> $OUTPUT
-echo -e "\n" >> $OUTPUT
+# Append UI last
+echo "// --- $ui_file ---" >> $OUTPUT
+cat "$ui_file" >> $OUTPUT
 
-cat gee/logic/ndvi.js >> $OUTPUT
-echo -e "\n" >> $OUTPUT
-
-cat gee/logic/zscore.js >> $OUTPUT
-echo -e "\n" >> $OUTPUT
-
-cat gee/logic/zscore_visual.js >> $OUTPUT
-echo -e "\n" >> $OUTPUT
-
-cat gee/logic/frontline.js >> $OUTPUT
-echo -e "\n" >> $OUTPUT
-
-# UI orchestration last
-cat gee/ui/app.js >> $OUTPUT
-
-echo "✅ main.js built successfully from modules."
-$DEBUG && echo "📎 Debug mode active: comments/logs may be preserved."
+echo "✅ main.js built successfully from:"
+for file in "${logic_files[@]}" "$ui_file"; do
+  echo "   • $file"
+done
+$DEBUG && echo "📎 Debug mode active: logs/comments preserved."

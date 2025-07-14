@@ -1,0 +1,64 @@
+/**
+ * Debug-Visualisierung des Z-Bildes.
+ * Zeigt Layer, Histogramm und einfache Statistiken.
+ * @param {ee.Image} zImage - Geclampte Z-Score-Image.
+ * @param {ee.Geometry} region - Zielregion.
+ * @param {number} year - Jahr der Analyse.
+ */
+function debugZVisualization(zImage, region, year) {
+  print('🔍 Debug: Z-Visualisierung läuft für Jahr', year);
+
+  // Map auf Region zentrieren
+  Map.centerObject(region, 8);
+
+  // Visualisierung auf Karte
+  Map.addLayer(zImage, {
+    min: config.zDisplayRange[0],
+    max: config.zDisplayRange[1],
+    palette: config.zPalette
+  }, 'Z Corrected ' + year);
+
+  // Statistiken über das Z-Bild
+  var stats = zImage.reduceRegion({
+    reducer: ee.Reducer.minMax()
+      .combine(ee.Reducer.mean(), '', true)
+      .combine(ee.Reducer.stdDev(), '', true),
+    geometry: region,
+    scale: config.scale,
+    maxPixels: config.maxPixels
+  });
+
+  print('📊 Z-Statistiken (' + year + '):', stats);
+
+  // Histogramm
+  zImage.reduceRegion({
+    reducer: ee.Reducer.histogram({ maxBuckets: 1000 }),
+    geometry: region,
+    scale: config.scale,
+    maxPixels: config.maxPixels
+  }).get('Z').evaluate(function (hist) {
+    if (!hist || !hist.bucketMeans || !hist.histogram) {
+      print('⚠️ Kein Histogramm berechenbar – wahrscheinlich keine gültigen Pixel.');
+      return;
+    }
+
+    var z_vals = hist.bucketMeans;
+    var counts = hist.histogram;
+
+    var chart = ui.Chart.array.values({ array: [counts], axis: 0 })
+      .setChartType('ColumnChart')
+      .setOptions({
+        title: 'Z-Werte Histogramm (' + year + ')',
+        hAxis: {
+          title: 'Z-Wert',
+          slantedText: true,
+          ticks: z_vals
+        },
+        vAxis: { title: 'Pixelanzahl' },
+        legend: { position: 'none' },
+        bar: { groupWidth: '95%' }
+      });
+
+    print(chart);
+  });
+}

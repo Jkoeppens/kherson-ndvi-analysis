@@ -1,0 +1,88 @@
+// 🔧 Parameter
+var regionKey = 'kherson';
+var refRegionKey = 'vinnytsia';
+var year = 2023;
+
+// 📁 Asset-Pfade
+var assetId = 'ZDIFF_' + regionKey + '_minusMean_' + refRegionKey + '_' + year;
+var assetPath = 'projects/ndvi-comparison-ukr/assets/' + assetId;
+var geometry = regionDefs[regionKey];
+
+// 🧠 Asset laden & analysieren, wenn vorhanden
+function analyzeZDiff() {
+  var zDiff = ee.Image(assetPath).rename('Z_Diff');
+
+  // 🗺️ Karte zentrieren
+  Map.centerObject(geometry, 8);
+
+  // 🎨 Layer: Z-Diff
+  Map.addLayer(zDiff, {
+    min: config.zDisplayRange[0],
+    max: config.zDisplayRange[1],
+    palette: config.zPalette
+  }, 'Z-Diff ' + regionKey + ' vs. ' + refRegionKey + ' (' + year + ')');
+
+  // 📊 Histogramm
+  var chart = ui.Chart.image.histogram(zDiff, geometry, config.scale).setOptions({
+    title: 'Z-Diff Histogramm – ' + regionKey + ' (' + year + ')',
+    hAxis: {title: 'Z-Diff'}, vAxis: {title: 'Pixelanzahl'}
+  });
+  print(chart);
+
+  // 🔬 Stichprobe (zentral + extrem)
+  var sample = zDiff.sample({
+    region: geometry, scale: config.scale, numPixels: 5, seed: 123, geometries: true
+  });
+  print('📊 Z-Diff Stichprobe:', sample);
+
+  var extremeLow = zDiff.lt(-10), extremeHigh = zDiff.gt(10);
+  var lowSample = zDiff.updateMask(extremeLow).sample({
+    region: geometry, scale: config.scale, numPixels: 1000, seed: 42, geometries: true
+  });
+  print('⚠️ Extrem negativ (< -10):', lowSample);
+
+  var highSample = zDiff.updateMask(extremeHigh).sample({
+    region: geometry, scale: config.scale, numPixels: 1000, seed: 43, geometries: true
+  });
+  print('⚠️ Extrem positiv (> +10):', highSample);
+
+  // 📈 Anteil extremer Werte
+  var extremeMask = extremeLow.or(extremeHigh);
+  var total = zDiff.reduceRegion({
+    reducer: ee.Reducer.count(),
+    geometry: geometry,
+    scale: config.scale,
+    maxPixels: config.maxPixels
+  });
+  var extreme = zDiff.updateMask(extremeMask).reduceRegion({
+    reducer: ee.Reducer.count(),
+    geometry: geometry,
+    scale: config.scale,
+    maxPixels: config.maxPixels
+  });
+  var share = ee.Number(extreme.get('Z_Diff'))
+                .divide(ee.Number(total.get('Z_Diff')))
+                .multiply(100);
+  print('📊 Anteil extremer Z-Diff-Werte (%):', share);
+
+  // 🗺️ Visualisierung: Extrem vs. Normal
+  Map.addLayer(zDiff.updateMask(extremeMask), {
+    min: -30, max: 30, palette: ['blue', 'white', 'red']
+  }, '⚠️ Extreme Z-Diff');
+
+  Map.addLayer(zDiff.updateMask(zDiff.gte(-10).and(zDiff.lte(10))), {
+    min: -2, max: 2, palette: ['green', 'white', 'orange']
+  }, '✅ Normale Z-Diff');
+}
+
+// 🔍 Prüfe, ob Asset existiert – dann analysieren oder exportieren
+ee.data.getAsset(assetPath, function(asset) {
+  if (asset) {
+    print('✅ Asset vorhanden, Analyse beginnt:', assetPath);
+    analyzeZDiff();
+  } else {
+    print('🚧 Asset nicht gefunden – Export wird gestartet...');
+    exportZDiff(regionKey, refRegionKey, year);
+    print('⏳ Bitte Export manuell im Tasks-Panel ausführen und Skript danach erneut starten.');
+  }
+});

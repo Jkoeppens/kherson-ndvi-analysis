@@ -1,0 +1,26 @@
+// --- debug_scl_visual.js ---
+// Visualisiert die Scene Classification Layer (SCL) nach ESA-Farbcodierung
+
+function debugSCL(image, region, year) {
+  var scl = image.select('SCL');
+
+  var sclVis = {
+    min: 1,
+    max: 11,
+    palette: [
+      'ff0000', // 1: Saturated/Defective
+      '888888', // 2: Dark Area Shadows
+      '404040', // 3: Cloud Shadows
+      '00ff00', // 4: Vegetation
+      'ffff00', // 5: Bare Soils
+      '0000ff', // 6: Water
+      'c0c0c0', // 7: Cloud low prob
+      '9999ff', // 8: Cloud medium prob
+      '6666ff', // 9: Cloud high prob
+      'ccccff', // 10: Thin Cirrus
+      'ffffff'  // 11: Snow/Ice
+    ]
+  };
+
+  Map.addLayer(scl.clip(region), sclVis, 'SCL ' + year);
+}

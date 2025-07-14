@@ -1,5 +1,3 @@
-// gee/ui/app.js (refactored for dual Z-standardization)
-
 // UI controls
 var regionSelect = ui.Select({
   items: regionKeys,
@@ -32,21 +30,46 @@ var runButton = ui.Button({
     var compRegion = regionDefs[compName].geometry;
     Map.centerObject(region, 8);
 
-    // Cropland masks
-    var cropland = ee.Image(config.croplandSource);
-    var maskA = cropland.gt(0).clip(region);
-    var maskB = cropland.gt(0).clip(compRegion);
+    // 📊 Z-Score A (Hauptregion, pixelbasiert)
+    var statsA = getNDVIBaselineStats(regionName);
+    var zA = getSafeZScore(regionName, year, statsA);
 
-    // Z images (region-wise standardized)
-    var zA = calculateZImage(year, region, maskA);
-    var zB = calculateZImage(year, compRegion, maskB);
+    // 📉 Z-Mittelwert B (Vergleichsregion)
+    var statsB = getNDVIBaselineStats(compName);
+    var zB_Image = loadNDVIAsset(compName, year)
+      .subtract(statsB.mean)
+      .divide(statsB.stdDev)
+      .updateMask(statsB.stdDev.gt(config.minStdDev))
+      .rename('NDVI_Z');
 
-    // Z correction: A - B
-    var zCorr = zA.subtract(zB).rename('Z_Corrected');
-    var clipped = showZCorrectedLayer(zCorr, 'Z Corrected ' + year);
+    var zB_mean = zB_Image.reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: regionDefs[compName],
+      scale: config.scale,
+      maxPixels: config.maxPixels
+    }).get('NDVI_Z');
 
-    renderZHistogram(clipped, region, year, null); // no vinnytsiaStats needed
+    // 🧮 Differenz berechnen
+    var zDiff = zA.subtract(ee.Number(zB_mean)).rename('Z_Diff');
 
+    // 🎨 Karte anzeigen
+    var zClamped = zDiff.clamp(config.zClampRange[0], config.zClampRange[1]);
+    Map.addLayer(zClamped, {
+      min: config.zDisplayRange[0],
+      max: config.zDisplayRange[1],
+      palette: config.zPalette
+    }, 'Z-Diff (' + regionName + ' vs. ' + compName + ', ' + year + ')');
+
+    // 📉 Histogramm anzeigen
+    var chart = ui.Chart.image.histogram(zDiff, region, config.scale)
+      .setOptions({
+        title: 'Z-Diff Histogramm (' + regionName + ' - mean(' + compName + '), ' + year + ')',
+        hAxis: {title: 'Z-Diff'},
+        vAxis: {title: 'Pixelanzahl'}
+      });
+    print(chart);
+
+    // 🔹 Frontlinie anzeigen
     if (config.frontlineAssets[year]) {
       showFrontline(year);
     } else {
@@ -58,7 +81,7 @@ var runButton = ui.Button({
 // Layout
 var panel = ui.Panel({
   widgets: [
-    ui.Label('NDVI Z-Score Analysis'),
+    ui.Label('NDVI Z-Diff Analysis'),
     ui.Label('Analysis Region:'), regionSelect,
     ui.Label('Comparison Region:'), compSelect,
     ui.Label('Year:'), yearSelect,

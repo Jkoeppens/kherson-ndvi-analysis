@@ -1,0 +1,99 @@
+1. Problem: Zugriff auf Bänder in Earth Engine mit .contains() und .and()
+
+    Fehler: bands.contains('B4').and(bands.contains('B8')) → „and is not a function“
+
+    Ursache:
+    bands.contains() gibt ein ee.Boolean-Objekt zurück, das in Earth Engine kein reguläres JS-Boolean ist. Methoden wie .and() gibt es nur für ee.Boolean, aber das Ergebnis von bands.contains() ist kein ee.Boolean, sondern ein ee.ComputedObject, und man kann .and() nicht direkt so kombinieren.
+
+    Lösung:
+    Statt .and() auf bands.contains() zu verwenden, haben wir auf zwei Arten gelöst:
+
+        Entweder beide bands.contains() als ee.Number mit .map() in eine Liste und dann mit reduce(ee.Reducer.min()) zusammenfassen (alle müssen 1 sein).
+
+        Oder verschachtelte ee.Algorithms.If() Bedingungen verwenden, die mit Earth Engine Objekten funktionieren.
+
+2. Problem: Sentinel-2 Bilder ohne SCL-Band
+
+    Fehler: maskSCL funktionierte nicht, wenn ein Bild kein SCL-Band hatte (führte zu versteckten Fehlern bei Filterung und Maskierung).
+
+    Ursache: Einige Sentinel-2-Szenen enthalten das SCL-Band nicht.
+
+    Lösung:
+    Defensive Programmierung:
+
+        Prüfe mit img.bandNames().contains('SCL') vor dem Maskieren,
+
+        Wenn nicht vorhanden, gebe das Originalbild ohne Maske zurück.
+
+3. Problem: NDVI-Berechnung trotz fehlender Bänder
+
+    Fehler: Bilder ohne B4 oder B8 wurden nicht ausgeschlossen, führten zu fehlerhaften NDVI-Berechnungen.
+
+    Ursache: Fehlende Prüfungen, ob beide Bänder im Bild vorhanden sind.
+
+    Lösung:
+    Prüfe vor NDVI-Berechnung, ob beide Bänder vorhanden sind. Wenn nicht, erstelle ein komplett maskiertes Dummy-Bild (NDVI = 0, aber maskiert).
+
+4. Problem: Verwechselung von Earth Engine-Objekten und JS-Objekten bei evaluate()
+
+    Fehler: Nach evaluate() auf einem Earth Engine-Objekt versuchte man, mit .get() auf das zurückgegebene JS-Objekt zuzugreifen → „get is not a function“.
+
+    Ursache: evaluate() wandelt EE-Objekte in reine JS-Objekte um, die keine EE-Methoden mehr haben.
+
+    Lösung:
+
+        Methoden wie .get(), .select(), .addBands() nur auf EE-Objekten nutzen, vor evaluate().
+
+        evaluate() nur für skalare Werte oder einfache JS-Objekte aufrufen, um sie in JavaScript weiterzuverarbeiten.
+
+5. Problem: Zu wenige valide Pixel nach Maskierung
+
+    Symptom: Nach Maskierung war die NDVI-Bildanzahl oder Pixelanzahl sehr gering, obwohl die Anzahl der Rohbilder groß war.
+
+    Ursache:
+
+        Übermäßiges Maskieren durch SCL-Maske oder durch zu restriktive Cropland-Maske.
+
+        Zu kleine StdDev-Werte führten zu instabilen Z-Werten, viele Pixel gingen verloren.
+
+    Lösung:
+
+        Cropland-Maske im Debug erstmal weglassen.
+
+        Mindestschwelle für StdDev einführen, um Division durch sehr kleine Werte zu verhindern.
+
+6. Problem: Histogramme und Statistiken zeigten keine oder fehlerhafte Werte
+
+    Symptom: Statistikfunktionen zeigten z.B. alle Nullen oder null als Ergebnis.
+
+    Ursache:
+
+        Filterung hatte alle Pixel maskiert.
+
+        Oder Histogramm wurde auf einem Bild ohne gültige Pixel berechnet.
+
+    Lösung:
+
+        Schrittweise Debug-Ausgaben eingefügt:
+
+            Anzahl der Bilder vor/nach Maskierung,
+
+            Anzahl der gültigen Pixel,
+
+            Stichproben von NDVI-Werten an Punkten,
+
+            Histogramm der Z-Werte.
+
+Zusammenfassung
+
+Die größten Stolpersteine waren vor allem:
+
+    Umgang mit EE-Objekten vs. JS-Objekten (besonders .evaluate() und .get()),
+
+    robustes Prüfen auf vorhandene Bänder,
+
+    defensive Maskierung bei fehlenden Daten,
+
+    Vermeidung von Division durch sehr kleine Standardabweichungen.
+
+Möchtest du, dass ich dir eine kurze Checkliste schreibe, wie du solche Probleme bei zukünftigen EE-Projekten systematisch vermeiden kannst?
