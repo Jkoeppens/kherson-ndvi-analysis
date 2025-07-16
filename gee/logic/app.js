@@ -1,177 +1,184 @@
+// Module
 var config = require('users/jakobkoppermann/Ukraine_NDVIRep:logic/config').config;
 var regions = require('users/jakobkoppermann/Ukraine_NDVIRep:logic/regions');
 var zscore = require('users/jakobkoppermann/Ukraine_NDVIRep:logic/zscore');
 var ndvi = require('users/jakobkoppermann/Ukraine_NDVIRep:logic/ndvi');
-var exportNDVI = require('users/jakobkoppermann/Ukraine_NDVIRep:logic/export').exportNDVIToAsset;
 var assetCheck = require('users/jakobkoppermann/Ukraine_NDVIRep:logic/asset_check');
-var frontline = require('users/jakobkoppermann/Ukraine_NDVIRep:logic/frontline');
-var charts = require('users/jakobkoppermann/Ukraine_NDVIRep:logic/charts');
+var monitorExportStatus = require('users/jakobkoppermann/Ukraine_NDVIRep:logic/export_monitor').monitorExportStatus;
+var runAnalysis = require('users/jakobkoppermann/Ukraine_NDVIRep:logic/run_analysis').runAnalysis;
+var useLiveNDVI = true;  // ⬅️ ganz oben in der App setzen
 
+
+
+function show(widget) {
+  widget.style().set('shown', true);
+}
+
+function hide(widget) {
+  widget.style().set('shown', false);
+}
+
+
+// App-Zustand
+var missingNDVIAssets = [];
+var waitingForNDVIExports = false;
+
+// Region & Auswahl
 var regionDefs = regions.regionDefs;
 var regionKeys = Object.keys(regionDefs);
 var isValidRegion = regions.isValidRegion;
 
-var useLiveNDVI = true;
+// Karte
+var map = ui.Map();
+map.setCenter(33.0, 47.0, 7);
+
+// UI-Elemente
+var useLiveNDVI = false;
 var liveModeCheckbox = ui.Checkbox({
   label: 'Live-Berechnung (kein Asset nötig)',
-  value: useLiveNDVI,
+  value: true,  // <--- Das ist wichtig: true = angehakt beim Start
   onChange: function(checked) {
     useLiveNDVI = checked;
-    print('🔁 NDVI-Modus:', checked ? 'Live' : 'Asset-basiert');
   }
 });
 
-var regionSelect = ui.Select({
-  items: regionKeys,
-  value: regionKeys[0],
-  placeholder: 'Select analysis region'
-});
 
-var compSelect = ui.Select({
-  items: regionKeys,
-  value: regionKeys[1],
-  placeholder: 'Select comparison region'
-});
-
+var regionSelect = ui.Select({ items: regionKeys, value: regionKeys[0] });
+var compSelect = ui.Select({ items: regionKeys, value: regionKeys[1] });
 var yearSelect = ui.Select({
   items: config.analysisYears.map(String),
-  value: String(config.analysisYears[0]),
-  placeholder: 'Select year'
+  value: String(config.analysisYears[0])
 });
-
 var statusLabel = ui.Label('Status: bereit');
 
-var runButton = ui.Button({
-  label: 'Run Analysis',
+var missingAssetsPanel = ui.Panel({ layout: ui.Panel.Layout.flow('vertical') });
+hide(missingAssetsPanel);
+
+var exportStatusPanel = ui.Panel({ layout: ui.Panel.Layout.flow('vertical') });
+hide(exportStatusPanel);
+
+// Export-Button + Wrapper
+var exportAssetsButton = ui.Button({
+  label: 'Fehlende Assets erzeugen',
   style: { stretch: 'horizontal' },
   onClick: function () {
+    assetCheck.exportMissingNDVIAssets(missingNDVIAssets);
+    monitorExportStatus(missingNDVIAssets, exportStatusPanel, statusLabel);
+    waitingForNDVIExports = true;
+    statusLabel.setValue('📤 Exporte gestartet. Bitte Analyse später erneut starten.');
+    hide(exportButtonWrapper);
+  }
+});
+var exportButtonWrapper = ui.Panel({ widgets: [exportAssetsButton] });
+hide(exportButtonWrapper);
+
+// Analyse starten
+var runButton = ui.Button({
+  label: 'Analyse starten',
+  style: { stretch: 'horizontal' },
+  onClick: function () {
+    // Eingabewerte holen
     var regionName = regionSelect.getValue();
     var compName = compSelect.getValue();
-    var yearStr = yearSelect.getValue();
-    var year = parseInt(yearStr, 10);
+    var year = parseInt(yearSelect.getValue(), 10);
+    var requiredYears = config.baselineYears.concat([year]);
 
-    statusLabel.setValue('Status: Prüfe Auswahl...');
-    print('🧪 Auswahl – Region:', regionName, '| Vergleich:', compName, '| Jahr:', year, '| Modus:', useLiveNDVI ? 'Live' : 'Export');
+    // UI zurücksetzen
+    missingNDVIAssets = [];
+    missingAssetsPanel.clear();
+    hide(missingAssetsPanel);
+    hide(exportButtonWrapper);
+    hide(exportStatusPanel);
+    map.clear();
 
+    // Validierung
     if (!regionName || !compName || isNaN(year)) {
       statusLabel.setValue('❌ Ungültige Auswahl.');
       return;
     }
 
     if (!isValidRegion(regionName) || !isValidRegion(compName)) {
-      statusLabel.setValue('❌ Ungültige Regionen ausgewählt.');
+      statusLabel.setValue('❌ Ungültige Regionen.');
       return;
     }
 
+    // Modus: Live
     if (useLiveNDVI) {
-      runAnalysis(regionName, compName, year);
-    } else {
-      var yearsToCheck = config.baselineYears.concat([year]);
-      assetCheck.checkAndExportNDVIAssets(regionName, yearsToCheck, function() {
-        assetCheck.checkAndExportNDVIAssets(compName, yearsToCheck, function() {
-          statusLabel.setValue('✅ Alle Assets vorhanden, berechne Z-Scores...');
-          runAnalysis(regionName, compName, year);
-        });
-      });
+      print('🧪 Live-Modus aktiv – starte Analyse');
+      runAnalysis(regionName, compName, year, useLiveNDVI, regionDefs, map, statusLabel, rightPanel);
+      return;
     }
+
+    // Modus: Asset → prüfen ob vorhanden
+    statusLabel.setValue('🔍 Prüfe benötigte NDVI-Assets…');
+
+    var checksDone = 0;
+
+    function handleResult(list) {
+      missingNDVIAssets = missingNDVIAssets.concat(list);
+      checksDone++;
+
+      if (checksDone === 2) {  // beide Regionen geprüft
+        if (missingNDVIAssets.length === 0) {
+          waitingForNDVIExports = false;
+          print('✅ Alle NDVI-Assets vorhanden – starte Analyse');
+          runAnalysis(regionName, compName, year, useLiveNDVI, regionDefs, map, statusLabel, rightPanel);
+        } else {
+          waitingForNDVIExports = true;
+          print('⛔️ Fehlende NDVI-Assets:', missingNDVIAssets);
+          showMissingAssetsList(missingNDVIAssets);
+          statusLabel.setValue('⚠️ Fehlende Assets erkannt. Bitte erst erzeugen.');
+          show(exportButtonWrapper);
+        }
+      }
+    }
+
+    // Beide Regionen prüfen
+    assetCheck.checkMissingNDVIAssets(regionName, requiredYears, handleResult);
+    assetCheck.checkMissingNDVIAssets(compName, requiredYears, handleResult);
   }
 });
 
-function runAnalysis(regionName, compName, year) {
-  var region = regionDefs[regionName];
-  var compRegion = regionDefs[compName];
-  Map.clear();
-
-  Map.centerObject(region, 8);
-  frontline.showFrontline(year);
-
-  var statsA = useLiveNDVI
-    ? zscore.getNDVIBaselineStatsLive(regionName)
-    : zscore.getNDVIBaselineStats(regionName);
-
-  var ndviA = useLiveNDVI
-    ? ndvi.getYearlyNDVI(year, region)
-    : zscore.loadNDVIAsset(regionName, year);
-
-  var zA = ndviA
-    .subtract(statsA.mean)
-    .divide(statsA.stdDev)
-    .updateMask(statsA.stdDev.gte(config.minStdDev))
-    .rename('NDVI_Z');
-
-  var statsB = useLiveNDVI
-    ? zscore.getNDVIBaselineStatsLive(compName)
-    : zscore.getNDVIBaselineStats(compName);
-
-  var ndviB = useLiveNDVI
-    ? ndvi.getYearlyNDVI(year, compRegion)
-    : zscore.loadNDVIAsset(compName, year);
-
-  var zB = ndviB
-    .subtract(statsB.mean)
-    .divide(statsB.stdDev)
-    .updateMask(statsB.stdDev.gte(config.minStdDev))
-    .rename('NDVI_Z');
-
-  var compRegionGeometry = (typeof compRegion.geometry === 'function')
-    ? compRegion.geometry()
-    : compRegion;
-
-  zB.reduceRegion({
-    reducer: ee.Reducer.mean(),
-    geometry: compRegionGeometry,
-    scale: config.scale,
-    maxPixels: config.maxPixels
-  }).evaluate(function (result) {
-    var zMeanB = result && result['NDVI_Z'];
-
-    if (zMeanB === null || zMeanB === undefined || isNaN(zMeanB) || typeof zMeanB !== 'number') {
-      print('❌ Z-Mittelwert Vergleichsregion ungültig:', zMeanB);
-      statusLabel.setValue('❌ Fehler: Vergleichswert ungültig.');
-      return;
-    }
-
-    print('✅ Z-Mittelwert von ' + compName + ':', zMeanB);
-
-    var zDiff = zA.subtract(ee.Number(zMeanB)).rename('Z_Diff');
-
-    Map.addLayer(zDiff, {
-      min: config.zDisplayRange[0],
-      max: config.zDisplayRange[1],
-      palette: config.zPalette
-    }, 'Z_Diff: ' + regionName + ' minus mean of ' + compName);
-
-    statusLabel.setValue('✅ Analyse fertig.');
-
-    charts.showAllStats(region, compRegionGeometry, statsA, statsB, zA, zB, zDiff);
-
-    var rightPanel = ui.Panel({
-      widgets: [charts.panel],
-      layout: ui.Panel.Layout.flow('vertical'),
-      style: { width: '350px', padding: '8px' }
-    });
-
-    ui.root.widgets().set(1, rightPanel);
+// Fehlende Assets anzeigen
+function showMissingAssetsList(list) {
+  missingAssetsPanel.clear();
+  show(missingAssetsPanel);
+  missingAssetsPanel.add(ui.Label({
+    value: 'Fehlende NDVI-Assets:',
+    style: { fontWeight: 'bold', margin: '4px 0 4px 0' }
+  }));
+  list.forEach(function (item) {
+    missingAssetsPanel.add(ui.Label('- ' + item.assetId));
   });
 }
 
+// UI-Aufbau
 var leftPanel = ui.Panel({
   widgets: [
-    ui.Label('NDVI Z-Score Comparison', { fontWeight: 'bold', fontSize: '20px' }),
-    ui.Label('Select Analysis Region:'),
-    regionSelect,
-    ui.Label('Select Comparison Region:'),
-    compSelect,
-    ui.Label('Select Year:'),
-    yearSelect,
-    ui.Label('Analysemodus:'),
-    liveModeCheckbox,
+    ui.Label('NDVI Z-Score Comparison', { fontWeight: 'bold', fontSize: '18px' }),
+    ui.Label('Analyse-Region:'), regionSelect,
+    ui.Label('Vergleichsregion:'), compSelect,
+    ui.Label('Jahr:'), yearSelect,
+    ui.Label('Modus:'), liveModeCheckbox,
     runButton,
-    statusLabel
+    statusLabel,
+    exportButtonWrapper,
+    missingAssetsPanel
   ],
   style: { width: '300px', padding: '10px' }
 });
 
+var rightPanel = ui.Panel({ style: { width: '350px', padding: '10px' } });
+
+var mainLayout = ui.SplitPanel({
+  firstPanel: leftPanel,
+  secondPanel: map,
+  orientation: 'horizontal',
+  wipe: false
+});
+
+// Root einrichten
 ui.root.clear();
-ui.root.add(leftPanel);
-ui.root.add(ui.Panel());
+ui.root.add(mainLayout);
+ui.root.add(rightPanel);
+ui.root.add(exportStatusPanel);

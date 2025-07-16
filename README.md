@@ -1,82 +1,130 @@
-# NDVI Z-Score Analysis for War-Affected Regions in Ukraine
+# 🇺🇦 NDVI-Z-Score-Vergleich Ukraine & Nachbarregionen
 
-This Earth Engine application visualizes changes in vegetation health across key regions along the frontline of the war in Ukraine. It uses Sentinel-2 NDVI data, applies cloud masking, and computes Z-scores relative to a dynamically chosen comparison region.
-
----
-
-## 🛰 What It Does
-
-* Computes **NDVI medians** for May–June in each year (2022–2024)
-* Applies **cloud masking** via Sentinel-2 SCL band
-* Calculates **Z-scores** relative to a pre-war baseline (2018–2021)
-* Enables dynamic **comparison to a reference region** (e.g. Vinnytsia, Luhansk, etc.)
-* Visualizes results as:
-
-  * Color-coded **Z-score maps**
-  * **Histograms** annotated with NDVI equivalents
-  * **Frontline overlays** per year
+Dieses Earth Engine Projekt erlaubt interaktive NDVI-Z-Score-Vergleiche zwischen verschiedenen Regionen der Ukraine, Moldaus und Rumäniens für die Jahre 2022–2024. Ziel ist es, die landwirtschaftliche Produktivität in Konfliktregionen wie Cherson unter Berücksichtigung klimatisch und pedologisch ähnlicher Vergleichsregionen zu analysieren.
 
 ---
 
-## 🎛 How to Use
+## 🔧 Funktionen
 
-1. Open the Earth Engine script in the GEE Code Editor
-2. Use the **UI panel** to select:
+### 🔬 Z-Score Analyse
 
-   * **Analysis region** (e.g. Kherson, Donetsk, Mariupol)
-   * **Comparison region** (any defined region)
-   * **Year** (2022–2024)
-3. Click **"Run Analysis"** to:
+- Berechnung des NDVI-Z-Scores für eine Zielregion basierend auf der historischen Referenz (2019–2021).
+- Vergleich mit dem mittleren Z-Wert einer Vergleichsregion.
+- Darstellung der Differenz: `Z_Diff = Z_Target - Mean(Z_Comparison)`.
 
-   * Center map on region
-   * Display Z-corrected NDVI
-   * Show histogram of Z-values
-   * Overlay June frontlines of selected year
+### 🌍 Regionsauswahl
+
+- Regionen wie `kherson`, `vinnytsia`, `romania_baragan`, `moldova_balti` u. a.
+- Validierung über `regions.isValidRegion(name)`.
+
+### ☁️ NDVI-Berechnung
+
+- Nutzung von Sentinel-2 SR Daten.
+- Cloud-Masking über SCL-Band.
+- NDVI-Berechnung mit `.normalizedDifference(['B8', 'B4'])`.
+- Optional: Maskierung negativer NDVI-Werte und Cropland-Maskierung.
+
+### ⚙️ Zwei Betriebsmodi
+
+1. **Live-Modus (Standard)**  
+   - NDVI wird direkt aus Sentinel-2-Daten berechnet.
+   - Keine Exporte nötig, ideal für Exploration & Debugging.
+
+2. **Asset-Modus (reproduzierbar)**  
+   - NDVI-Bilder werden pro Region & Jahr vorab als Assets exportiert.
+   - Schnellere Ladezeiten, konsistente Basis für langfristige Auswertungen.
+
+### 📉 Statistik & Visualisierung
+
+- Interaktive Charts und Histogramme über `charts.showAllStats(...)`.
+- Farbcodierte Z-Differenzkarte (`Z_Diff`) mit einstellbarem Wertebereich.
+
+### 🔫 Frontlinie anzeigen
+
+- Frontlinien für Juni 2022–2024 über `frontline.showFrontline(year)` eingeblendet.
 
 ---
 
-## 📁 Project Structure
+## 🧩 Modulübersicht
 
-```bash
-kherson-ndvi-analysis/
-├── gee/
-│   ├── logic/
-│   │   ├── regions.js         # Geometries for all regions
-│   │   ├── ndvi.js            # NDVI calculation and masking
-│   │   ├── zscore.js          # Baseline and Z-correction logic
-│   │   ├── zscore_visual.js   # Visualization: color map + histogram
-│   │   └── frontline.js       # Frontline asset loader and parser
-│   └── ui/
-│       └── app.js             # Main user interface logic
-├── build.sh                  # Script to concatenate modules into main.js
-├── main.js                   # Full script to run in GEE (generated)
-└── README.md                 # You are here
+| Modulname           | Funktion                                                      |
+|---------------------|---------------------------------------------------------------|
+| `config.js`         | Zentrale Parameter (Skalierung, Farbpalette, Baseline-Jahre) |
+| `regions.js`        | Definition und Validierung von Analyse-Regionen              |
+| `ndvi.js`           | Rohdatenverarbeitung: NDVI-Berechnung, Wolkenmaskierung      |
+| `zscore.js`         | Z-Score-Logik, Live- und Asset-Varianten                     |
+| `export.js`         | Export von NDVI-Bildern zu GEE Assets                        |
+| `asset_check.js`    | Überprüfung, ob alle NDVI-Assets vorhanden sind              |
+| `exportzdiff.js`    | Export der berechneten Z-Differenzkarten                     |
+| `frontline.js`      | Laden und Anzeigen von Frontlinien (FeatureCollection)       |
+| `charts.js`         | Darstellung von Histogrammen und Statistikwerten            |
+| `app.js`            | UI-Logik für Interaktion & Visualisierung                    |
+
+---
+
+## 🚀 Nutzung
+
+### 1. Interface starten
+
+Im Earth Engine Code Editor:
+```js
+var uiApp = require('users/jakobkoppermann/Ukraine_NDVIRep:ui/app');
+```
+
+### 2. Region, Vergleichsregion & Jahr auswählen
+
+- Zielregion = Analysegebiet (z. B. `kherson`)
+- Vergleichsregion = Referenzwert (z. B. `vinnytsia`)
+- Jahr = 2022–2024
+
+### 3. Modus wählen
+
+- Häkchen bei *Live-Berechnung* → Berechnung direkt aus Rohdaten
+- Kein Häkchen → prüft/verwendet gespeicherte Assets
+
+### 4. Analyse starten
+
+Per Klick auf `Run Analysis`:
+- Bei Live-Modus sofortige Berechnung
+- Bei Asset-Modus wird geprüft, ob alle NDVI-Assets vorhanden sind. Fehlende Assets werden automatisch exportiert (ca. 1–2 Stunden Wartezeit je nach GEE-Last).
+
+---
+
+## 🖼 Beispiel: NDVI-Anomalie in Cherson
+
+```text
+Region: kherson
+Vergleich: vinnytsia
+Jahr: 2023
+Modus: Asset-basiert
+→ Ausgabe: Z_Diff-Karte mit Visualisierung der landwirtschaftlichen Abweichung
 ```
 
 ---
 
-## ⚙️ Dev Notes
+## 📦 Asset-Struktur
 
-* **Earth Engine version**: `ee.ImageCollection('COPERNICUS/S2_SR')`
-* **Cropland mask**: `USGS/GFSAD1000_V1`
-* **Z-score clamp range**: \[-5, 5] → color ramp normalized to \[-2, 2]
-* Frontline shapefiles must be uploaded as assets under:
+- NDVI-Exporte:  
+  `projects/ndvi-comparison-ukr/assets/ndvi_exports/NDVI_<region>_<year>`
 
-  ```
-  ```
+- Z-Diff-Exports:  
+  `projects/ndvi-comparison-ukr/assets/ZDIFF_<regionA>_minusMean_<regionB>_<year>`
 
-projects/ndvi-comparison-ukr/assets/frontline\_<year>-06-30
-
-```
+- Frontlinien:  
+  `projects/ndvi-comparison-ukr/assets/frontline_<year>-06-30`
 
 ---
 
-## 💡 About This Project
+## 🧠 Hinweise
 
-Developed as a **data journalism demo** to support remote sensing-based reporting in conflict zones. Modularized for maintainability and future expansion.
+- Z-Scores sind nur bei ausreichender Standardabweichung (`minStdDev = 0.01`) gültig.
+- Für alle Regionen ist eine minimale Beobachtungsdichte im Mai–Juni Voraussetzung.
+- Das Projekt ist erweiterbar: weitere Regionen, Frontlinien, Zeiträume.
 
-### 🛠 Maintainer
-Jakob Koeppens  ·  [github.com/Jkoeppens](https://github.com/Jkoeppens)
+---
 
-```
-# kherson-ndvi-analysis
+## 📝 Autor
+
+**Jakob Koppermann**  
+Projektbeginn: 2024  
+Fokus: Agrarproduktivität & Kriegsfolgen in der Ukraine

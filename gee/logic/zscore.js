@@ -10,6 +10,36 @@ function loadNDVIAsset(regionKey, year) {
   return ee.Image(assetId).select('NDVI');
 }
 
+function getOrCreateNDVIAsset(regionKey, year) {
+  var assetId = assetBase + 'NDVI_' + regionKey + '_' + year;
+  var region = regionDefs[regionKey];
+  var ndviImage = ndvi.getYearlyNDVI(year, region);
+
+  // Versuch: Asset laden
+  return ee.data.getAsset(assetId, function(asset) {
+    // ✅ Asset existiert
+    print('📦 Asset vorhanden:', assetId);
+    return ee.Image(assetId).select('NDVI');
+  }, function(error) {
+    // ❌ Asset fehlt → Export starten
+    print('⚠️ Asset fehlt, starte Export:', assetId);
+
+    Export.image.toAsset({
+      image: ndviImage.rename('NDVI'),
+      description: 'NDVI_' + regionKey + '_' + year,
+      assetId: assetId,
+      region: region.geometry ? region.geometry() : region,
+      scale: config.scale,
+      maxPixels: config.maxPixels
+    });
+
+    // Optional: Dummy zurückgeben, oder Null-Image mit Hinweis
+    return ndviImage.multiply(0).rename('NDVI')
+      .set('note', '⚠️ NDVI live berechnet, Export läuft: ' + assetId);
+  });
+}
+
+
 function getNDVIBaselineStats(regionKey) {
   var imgs = [];
 

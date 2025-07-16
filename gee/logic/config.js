@@ -1,19 +1,19 @@
 var config = {
   baselineYears: [2019, 2020, 2021],
   analysisYears: [2022, 2023, 2024],
-  analysisMonths: [5, 6], // Mai–Juni
+  analysisMonths: [6, 7], // Mai–Juni
   scale: 100,
   crs: 'EPSG:4326',
   maxPixels: 1e9,
   minStdDev: 0.01,
   zClampRange: [-5, 5],
-  zDisplayRange: [-2, 2],
+  zDisplayRange: [-10, 10],
   zPalette: [
     '#a50026', '#f46d43', '#fdae61',
     '#ffffbf', '#d9ef8b', '#66bd63', '#1a9850'
   ],
   croplandSource: 'USGS/GFSAD1000_V1',
-  useCroplandMask: false,
+  useCroplandMask: true,
   maskNegativeNDVI: true, 
 
   frontlineAssets: {
