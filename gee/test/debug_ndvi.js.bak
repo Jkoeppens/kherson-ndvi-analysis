@@ -1,0 +1,94 @@
+// 🧪 Debug-Skript für getYearlyNDVI
+(function debugNDVI() {
+  var regionKey = 'kherson';
+  var year = 2022;
+
+  if (!isValidRegion(regionKey)) {
+    print('❌ Ungültiger RegionKey:', regionKey);
+    return;
+  }
+
+  var region = regionDefs[regionKey];
+  var start = ee.Date.fromYMD(year, config.analysisMonths[0], 1);
+  var end = ee.Date.fromYMD(year, config.analysisMonths[1] + 1, 1);
+
+  print('🗺️ Region:', region);
+  print('🗓️ Zeitraum:', start, 'bis', end);
+
+  var collectionRaw = ee.ImageCollection('COPERNICUS/S2_SR')
+    .filterBounds(region)
+    .filterDate(start, end);
+
+  print('📂 Rohbilder (Anzahl):', collectionRaw.size());
+
+  var exampleBefore = ee.Image(collectionRaw.first());
+  print('🧼 Vor maskSCL:', exampleBefore);
+
+  var collectionMasked = collectionRaw.map(maskSCL);
+  var exampleMasked = ee.Image(collectionMasked.first());
+  print('🧼 Nach maskSCL (Beispielbild):', exampleMasked);
+
+  var collectionWithNDVI = collectionMasked.map(addNDVI);
+  var exampleNDVI = ee.Image(collectionWithNDVI.first()).select('NDVI');
+  print('🌿 addNDVI() angewendet:', exampleNDVI);
+
+  var ndviMedian = collectionWithNDVI
+    .select('NDVI')
+    .median()
+    .clip(region)
+    .updateMask(collectionWithNDVI.select('NDVI').median().neq(0))
+    .rename('NDVI');
+
+  print('📊 NDVI-Median:', ndviMedian);
+
+  // 🔢 Gültige Beobachtungen
+  var validObs = collectionWithNDVI
+    .select('NDVI')
+    .map(function(img) {
+      return img.mask().rename('valid').uint8();
+    })
+    .sum()
+    .rename('valid_obs');
+
+  print('📊 Gültige Beobachtungen:', validObs);
+
+  // 🌾 Cropland-Maske
+  if (config.useCroplandMask) {
+    var cropland = ee.Image(config.croplandSource)
+      .updateMask(
+        ee.Image(config.croplandSource).gt(0)
+          .and(ee.Image(config.croplandSource).lt(254))
+      )
+      .clip(region);
+    print('🌾 Cropland-Maske:', cropland);
+
+    ndviMedian = ndviMedian.updateMask(cropland);
+    print('✅ Cropland-Maske angewendet');
+  }
+
+  // 📈 Statistik
+  var stats = ndviMedian.reduceRegion({
+    reducer: ee.Reducer.minMax().combine({
+      reducer2: ee.Reducer.mean().combine({
+        reducer2: ee.Reducer.stdDev(),
+        sharedInputs: true
+      }),
+      sharedInputs: true
+    }),
+    geometry: region,
+    scale: config.scale,
+    maxPixels: config.maxPixels
+  });
+
+  print('📈 NDVI-Statistik:', stats);
+
+  // 📊 Histogramm
+  var histo = ndviMedian.reduceRegion({
+    reducer: ee.Reducer.histogram({maxBuckets: 30}),
+    geometry: region,
+    scale: config.scale,
+    maxPixels: config.maxPixels
+  });
+
+  print('📊 NDVI-Histogramm:', histo);
+})();

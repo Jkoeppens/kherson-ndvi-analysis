@@ -1,0 +1,33 @@
+var config = require('users/your_username/gee/logic/config').config;
+var regionDefs = require('users/your_username/gee/logic/regions').regionDefs;
+var regionMeta = require('users/your_username/gee/logic/regions').regionMeta;
+var regionKeys = Object.keys(regionDefs);
+var isValidRegion = require('users/your_username/gee/logic/regions').isValidRegion;
+
+var maskSCL = require('users/your_username/gee/logic/ndvi').maskSCL;
+var addNDVI = require('users/your_username/gee/logic/ndvi').addNDVI;
+var getYearlyNDVI = require('users/your_username/gee/logic/ndvi').getYearlyNDVI;
+var countValidNDVIObservations = require('users/your_username/gee/logic/ndvi').countValidNDVIObservations;
+
+var exportNDVIToAsset = require('users/your_username/gee/logic/export').exportNDVIToAsset;
+
+var loadNDVIAsset = require('users/your_username/gee/logic/zscore').loadNDVIAsset;
+var getNDVIBaselineStats = require('users/your_username/gee/logic/zscore').getNDVIBaselineStats;
+var getSafeZScore = require('users/your_username/gee/logic/zscore').getSafeZScore;
+
+var exportZDiff = require('users/your_username/gee/logic/exportzdiff').exportZDiff;
+var batchExportZDiff = require('users/your_username/gee/logic/exportzdiff').batchExportZDiff;
+
+var showFrontline = require('users/your_username/gee/logic/frontline').showFrontline;
+
+// --- UI (Haupt-App) ---
+var app = require('users/your_username/gee/ui/app');
+
+// --- Debug-Module (nicht automatisch ausgeführt) ---
+var dbg_ndvi = require('users/your_username/gee/test/debug_ndvi');
+var dbg_export = require('users/your_username/gee/test/debug_export');
+var dbg_zscore = require('users/your_username/gee/test/debug_zscore');
+var dbg_exportzdiff = require('users/your_username/gee/test/debug_exportzdiff');
+
+// 🧪 Info zum Entwickler
+print('🧪 Debug-Modus geladen. Nutze dbg_ndvi, dbg_export etc. im Skript.');

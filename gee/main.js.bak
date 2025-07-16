@@ -1,0 +1,498 @@
+// Auto-generated main.js for GEE
+// Generated on Mon Jul 14 20:59:36 CEST 2025
+
+// --- gee/logic/config.js ---
+var config = {
+  baselineYears: [2019, 2020, 2021],
+  analysisYears: [2022, 2023, 2024],
+  analysisMonths: [5, 6], // Mai–Juni
+  scale: 100,
+  maxPixels: 1e9,
+  minStdDev: 0.01, // Mindestwert für σ zur Maskierung instabiler Pixel
+  zClampRange: [-5, 5],
+  zDisplayRange: [-2, 2],
+  zPalette: [
+    '#a50026', '#f46d43', '#fdae61',
+    '#ffffbf', '#d9ef8b', '#66bd63', '#1a9850'
+  ],
+  croplandSource: 'USGS/GFSAD1000_V1',
+  useCroplandMask: false,
+  
+  frontlineAssets: {
+    2022: 'projects/ndvi-comparison-ukr/assets/frontline_2022-06-30',
+    2023: 'projects/ndvi-comparison-ukr/assets/frontline_2023-06-30',
+    2024: 'projects/ndvi-comparison-ukr/assets/frontline_2024-06-30'
+  }
+};
+
+
+// --- gee/logic/regions.js ---
+/**
+ * Geometrien und Metadaten für NDVI/Z-Analyse-Regionen.
+ * Jede Region ist ein Feature mit Geometrie & Metadaten.
+ */
+var regionDefs = {
+  kherson: ee.Geometry.Rectangle([32.0, 46.0, 33.0, 47.0]),
+  vinnytsia: ee.Geometry.Rectangle([28.1, 49.3, 29.1, 49.9]),
+  kharkiv: ee.Geometry.Rectangle([36.0, 49.5, 37.5, 50.5]),
+  donetsk: ee.Geometry.Rectangle([37.0, 47.0, 38.5, 48.5]),
+  luhansk: ee.Geometry.Rectangle([38.0, 48.0, 39.5, 49.5]),
+  zaporizhzhia: ee.Geometry.Rectangle([35.0, 47.0, 36.5, 48.0]),
+  mariupol: ee.Geometry.Rectangle([37.0, 47.0, 38.0, 47.5])
+};
+
+/**
+ * Metadaten zu Regionen.
+ */
+var regionMeta = {
+  kherson: { hasFrontline: true },
+  vinnytsia: { hasFrontline: false },
+  kharkiv: { hasFrontline: true },
+  donetsk: { hasFrontline: true },
+  luhansk: { hasFrontline: true },
+  zaporizhzhia: { hasFrontline: true },
+  mariupol: { hasFrontline: true }
+};
+
+/**
+ * Liste aller verfügbaren Regionenschlüssel.
+ */
+var regionKeys = Object.keys(regionDefs);
+
+/**
+ * Prüft, ob ein Regionsname definiert ist.
+ * @param {string} name
+ * @returns {boolean}
+ */
+function isValidRegion(name) {
+  return regionDefs.hasOwnProperty(name);
+}
+
+
+
+
+// --- gee/logic/ndvi.js ---
+function maskSCL(image) {
+  var scl = image.select('SCL');
+  var mask = scl.neq(3).and(scl.neq(6)).and(scl.neq(7)).and(scl.neq(8));
+  return image.updateMask(mask);
+}
+
+function addNDVI(image) {
+  return image.addBands(
+    image.normalizedDifference(['B8', 'B4']).rename('NDVI')
+  );
+}
+
+/**
+ * Berechnet das jährliche NDVI-Medianbild für eine Region.
+ * @param {number} year
+ * @param {ee.Geometry} region
+ * @returns {ee.Image}
+ */
+function getYearlyNDVI(year, region) {
+  // 📆 Definiere Start- und Enddatum basierend auf config.analysisMonths
+  var startMonth = config.analysisMonths[0];  // z.B. 5 (Mai)
+  var endMonth = config.analysisMonths[1];    // z.B. 6 (Juni)
+
+  var start = ee.Date.fromYMD(year, startMonth, 1);
+  var end = ee.Date.fromYMD(year, endMonth, 1).advance(1, 'month');  // inklusive Juni
+
+  // 📂 Lade Sentinel-2 SR Bilder
+  var collection = ee.ImageCollection('COPERNICUS/S2_SR')
+    .filterBounds(region)
+    .filterDate(start, end)
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 80));
+
+  print('📂 Rohbilder (Anzahl):', collection.size());
+
+  // 🧼 Wolken maskieren
+  var masked = collection.map(maskSCL);
+
+  // 🌿 NDVI berechnen
+  var withNDVI = masked.map(addNDVI);
+
+  // 📊 Median NDVI berechnen
+  var ndviMedian = withNDVI.select('NDVI').median().rename('NDVI');
+
+  // 📈 Anzahl gültiger Beobachtungen
+  var validObs = withNDVI.select('NDVI')
+    .reduce(ee.Reducer.count())
+    .rename('valid_obs');
+
+  // 🌾 Cropland-Maske (optional)
+  var cropland = ee.Image(config.croplandSource).select('landcover');
+  var croplandMask = cropland.eq(1);  // "1" = bewässertes Farmland laut GFSAD
+
+  // ✅ Cropland-Maske anwenden (wenn konfiguriert)
+  var useCroplandMask = config.useCroplandMask;
+  var finalNDVI = ee.Image(
+    ee.Algorithms.If(useCroplandMask, ndviMedian.updateMask(croplandMask), ndviMedian)
+  );
+
+  // 📦 Rückgabe mit Metadaten
+  return finalNDVI
+    .set({
+      'system:time_start': start.millis(),
+      'region_name': region,
+      'year': year
+    })
+    .addBands(validObs);  // Optionale Rückgabe der Beobachtungsanzahl
+}
+
+
+function countValidNDVIObservations(year, region, months) {
+  var m = months || config.analysisMonths;
+  var start = ee.Date.fromYMD(year, m[0], 1);
+  var end = ee.Date.fromYMD(year, m[1] + 1, 1);
+
+  var collection = ee.ImageCollection('COPERNICUS/S2_SR')
+    .filterBounds(region)
+    .filterDate(start, end)
+    .map(maskSCL)
+    .map(addNDVI)
+    .select('NDVI');
+
+  return collection.map(function(img) {
+      return img.mask().rename('valid').uint8();
+    })
+    .sum()
+    .rename('valid_obs');
+}
+
+
+// --- gee/logic/export.js ---
+/**
+ * Exportiert ein NDVI-Bild als Asset.
+ * ⚠️ Achtung: Überspringt keine vorhandenen Assets automatisch!
+ * 
+ * @param {string} regionKey – z. B. 'kherson'
+ * @param {number} year – z. B. 2022
+ */
+function exportNDVIToAsset(regionKey, year) {
+  if (!isValidRegion(regionKey)) {
+    print('❌ Ungültiger Regionsname:', regionKey);
+    return;
+  }
+
+  var exportId = 'NDVI_' + regionKey + '_' + year;
+  var assetPath = 'projects/ndvi-comparison-ukr/assets/ndvi_exports/' + exportId;
+
+  var region = regionDefs[regionKey].geometry; // ✅ jetzt sicher
+  var ndvi = getYearlyNDVI(year, region);
+
+  Export.image.toAsset({
+    image: ndvi,
+    description: 'NDVI_export_' + regionKey + '_' + year,
+    assetId: assetPath,
+    region: region,
+    scale: config.scale,
+    maxPixels: config.maxPixels
+  });
+
+  print('📤 Export gestartet:', assetPath);
+}
+
+
+
+// --- gee/logic/zscore.js ---
+// 📁 Pfad zum NDVI-Asset-Ordner
+var assetBase = 'projects/ndvi-comparison-ukr/assets/ndvi_exports/';
+
+/**
+ * Lädt ein NDVI-Asset (nur Band 'NDVI').
+ * @param {string} regionKey
+ * @param {number} year
+ * @returns {ee.Image}
+ */
+function loadNDVIAsset(regionKey, year) {
+  var assetId = assetBase + 'NDVI_' + regionKey + '_' + year;
+  return ee.Image(assetId).select('NDVI'); // ⬅️ Nur das gewünschte Band
+}
+
+/**
+ * Berechnet μ und σ aus der Baseline für eine Region.
+ * @param {string} regionKey
+ * @returns {{mean: ee.Image, stdDev: ee.Image}}
+ */
+function getNDVIBaselineStats(regionKey) {
+  var imgs = config.baselineYears.map(function(year) {
+    return loadNDVIAsset(regionKey, year);
+  });
+
+  var collection = ee.ImageCollection(imgs);
+  var mean = collection.mean().rename('NDVI_mean');
+  var stdDev = collection.reduce(ee.Reducer.stdDev()).rename('NDVI_std');
+
+  return {mean: mean, stdDev: stdDev};
+}
+
+/**
+ * Gibt ein Z-Score-Bild für ein bestimmtes Jahr zurück,
+ * maskiert aber alle Pixel mit instabiler Standardabweichung.
+ * @param {string} regionKey
+ * @param {number} year
+ * @param {{mean: ee.Image, stdDev: ee.Image}} [statsDict]
+ * @returns {ee.Image}
+ */
+function getSafeZScore(regionKey, year, statsDict) {
+  var ndvi = loadNDVIAsset(regionKey, year).select(['NDVI']);  // ✅ nur NDVI!
+  var stats = statsDict || getNDVIBaselineStats(regionKey);
+
+  var valid = stats.stdDev.gte(config.minStdDev);  // Maske
+
+  return ndvi
+    .subtract(stats.mean.select('NDVI_mean'))
+    .divide(stats.stdDev.select('NDVI_std'))
+    .updateMask(valid)
+    .rename(['NDVI_Z']);  // ✅ korrekt für 1 Band
+}
+
+
+// --- gee/logic/exportzdiff.js ---
+function exportZDiff(regionA, regionB, year) {
+  if (!isValidRegion(regionA) || !isValidRegion(regionB)) {
+    print('❌ Ungültige Regionen:', regionA, regionB);
+    return;
+  }
+
+  var exportId = 'ZDIFF_' + regionA + '_minusMean_' + regionB + '_' + year;
+  var assetPath = 'projects/ndvi-comparison-ukr/assets/' + exportId;
+
+  ee.data.getAsset(assetPath, function(asset) {
+    if (asset) {
+      print('⏭️  Bereits vorhanden, Export übersprungen:', assetPath);
+      return;
+    }
+
+    // 📈 Z-Score von Region A (z. B. Kherson)
+    var statsA = getNDVIBaselineStats(regionA);
+    var zA = getSafeZScore(regionA, year, statsA);
+
+    // 📈 Z-Score-Mittelwert von Region B (z. B. Vinnytsia)
+    var statsB = getNDVIBaselineStats(regionB);
+    var ndviB = loadNDVIAsset(regionB, year);
+
+    var zB = ndviB.subtract(statsB.mean)
+                  .divide(statsB.stdDev)
+                  .updateMask(statsB.stdDev.gt(config.minStdDev))
+                  .rename('NDVI_Z');
+
+    var zMeanB = zB.reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: regionDefs[regionB].geometry,
+      scale: config.scale,
+      maxPixels: config.maxPixels
+    }).get('NDVI_Z');
+
+    // 📊 Z-Differenz
+    var zDiff = zA.subtract(ee.Number(zMeanB)).rename('Z_Diff');
+
+    // ⚠️ Extremwerte maskieren
+    var maskedDiff = zDiff.updateMask(zDiff.gte(-10).and(zDiff.lte(10)));
+
+    // 📤 Export
+    Export.image.toAsset({
+      image: maskedDiff,
+      description: exportId,
+      assetId: assetPath,
+      region: regionDefs[regionA].geometry,
+      scale: config.scale,
+      maxPixels: config.maxPixels
+    });
+
+    print('📤 Export gestartet (Z_Diff):', exportId);
+  });
+}
+/**
+ * Führt Z-Differenz-Exporte für mehrere Jahre aus.
+ * Region A wird pixelbasiert exportiert, Region B fließt als Mittelwert ein.
+ * 
+ * @param {string} regionA – z. B. 'kherson'
+ * @param {string} regionB – z. B. 'vinnytsia'
+ * @param {number[]} years – Liste von Jahren, z. B. [2022, 2023, 2024]
+ */
+function batchExportZDiff(regionA, regionB, years) {
+  if (!isValidRegion(regionA) || !isValidRegion(regionB)) {
+    print('❌ Ungültige Regionen:', regionA, regionB);
+    return;
+  }
+
+  years.forEach(function(year) {
+    exportZDiff(regionA, regionB, year);
+  });
+
+  print('📦 Batch-Z-Diff-Exporte gestartet für:', regionA, 'gegen', regionB, 'Jahre:', years);
+}
+
+
+// --- gee/logic/frontline.js ---
+/**
+ * Frontline asset IDs by year (June snapshots).
+ */
+var frontlineAssets = config.frontlineAssets;
+
+/**
+ * Converts polygon features into boundary lines (safe version).
+ * Handles invalid or empty geometries gracefully.
+ * @param {ee.FeatureCollection} fc 
+ * @returns {ee.FeatureCollection}
+ */
+function extractFrontlineLines(fc) {
+  return fc.map(function (feature) {
+    var geoms = ee.Geometry(feature.geometry()).geometries();
+    var lines = ee.List(geoms).map(function (g) {
+      var polygon = ee.Geometry(g);
+      var isPolygon = polygon.type().equals('Polygon');
+      var outer = ee.Algorithms.If(isPolygon, polygon.coordinates().get(0), null);
+      var isValid = ee.Algorithms.If(outer, ee.List(outer).length().gte(2), false);
+      return ee.Algorithms.If(
+        isValid,
+        ee.Feature(ee.Geometry.LineString(outer)).copyProperties(feature),
+        null
+      );
+    });
+    return ee.FeatureCollection(lines).filter(ee.Filter.notNull(['system:index']));
+  }).flatten();
+}
+
+/**
+ * Load and display frontline for a given year.
+ * @param {number} year 
+ * @returns {ee.FeatureCollection|null}
+ */
+function showFrontline(year) {
+  var assetId = frontlineAssets[year];
+  if (!assetId) {
+    print('⚠️ Kein Frontline-Asset für Jahr:', year);
+    return null;
+  }
+  var frontline = ee.FeatureCollection(assetId);
+  var frontlineLines = extractFrontlineLines(frontline);
+  Map.addLayer(frontlineLines, {
+    color: '#1f78b4',
+    width: 2
+  }, 'Frontline ' + year + '-06-30');
+  return frontlineLines;
+}
+
+// Konzeptuelle Exporte
+exports.showFrontline = showFrontline;
+exports.frontlineAssets = frontlineAssets;
+
+
+// --- gee/ui/app.js ---
+// --- gee/ui/app.js ---
+
+// 🎛 Auswahlfelder mit Defaultwerten
+var regionSelect = ui.Select({
+  items: regionKeys,
+  value: regionKeys[0],
+  placeholder: 'Select analysis region'
+});
+
+var compSelect = ui.Select({
+  items: regionKeys,
+  value: regionKeys[1],
+  placeholder: 'Select comparison region'
+});
+
+var yearSelect = ui.Select({
+  items: config.analysisYears.map(String),
+  value: String(config.analysisYears[0]),
+  placeholder: 'Select year'
+});
+
+// ▶️ Run-Button
+var runButton = ui.Button({
+  label: 'Run Analysis',
+  style: { stretch: 'horizontal' },
+  onClick: function () {
+    var regionName = regionSelect.getValue();
+    var compName = compSelect.getValue();
+    var yearStr = yearSelect.getValue();
+    var year = parseInt(yearStr, 10);
+
+    // 🧪 Auswahl-Info
+    print('🧪 Auswahl – Region:', regionName, '| Vergleich:', compName, '| Jahr:', year);
+
+    // ❌ Leere Auswahl?
+    if (!regionName || !compName || !yearStr || isNaN(year)) {
+      print('❌ Einer der Select-Werte ist leer oder ungültig.');
+      return;
+    }
+
+    // ❌ Gültige Regionen?
+    if (!isValidRegion(regionName) || !isValidRegion(compName)) {
+      print('❌ Ungültige Regionen:', regionName, compName);
+      return;
+    }
+
+    // ✅ Region definieren
+    var regionDef = regionDefs[regionName];
+    var compDef = regionDefs[compName];
+
+    // 🧪 Debug: Typen prüfen
+    print('🔍 regionDef:', regionDef);
+    print('🔍 compDef:', compDef);
+    print('🧪 typeof regionDef:', typeof regionDef);
+    print('🧪 regionDef instanceof ee.Geometry:', regionDef instanceof ee.Geometry);
+
+    if (!(regionDef instanceof ee.Geometry) || !(compDef instanceof ee.Geometry)) {
+      print('❌ regionDef oder compDef ist keine ee.Geometry.');
+      return;
+    }
+
+    // ✅ Geometrien direkt verwenden
+    var region = regionDef;
+    var compRegion = compDef;
+
+    Map.centerObject(region, 8);
+
+    // 📊 Z-Score-Differenz
+    var statsA = getNDVIBaselineStats(regionName);
+    var zA = getSafeZScore(regionName, year, statsA);
+
+    var statsB = getNDVIBaselineStats(compName);
+    var ndviB = loadNDVIAsset(compName, year);
+
+    var zB = ndviB
+      .subtract(statsB.mean)
+      .divide(statsB.stdDev)
+      .updateMask(statsB.stdDev.gt(config.minStdDev))
+      .rename('NDVI_Z');
+
+    var zMeanB = zB.reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: compRegion,
+      scale: config.scale,
+      maxPixels: config.maxPixels
+    }).get('NDVI_Z');
+
+    var zDiff = zA.subtract(ee.Number(zMeanB)).rename('Z_Diff');
+
+    Map.addLayer(zDiff, {
+      min: config.zDisplayRange[0],
+      max: config.zDisplayRange[1],
+      palette: config.zPalette
+    }, 'Z_Diff: ' + regionName + ' minus mean of ' + compName);
+  }
+});
+
+// 📋 UI-Panel zusammenbauen
+var panel = ui.Panel({
+  widgets: [
+    ui.Label('NDVI Z-Score Comparison', { fontWeight: 'bold', fontSize: '20px' }),
+    ui.Label('Select Analysis Region:'),
+    regionSelect,
+    ui.Label('Select Comparison Region:'),
+    compSelect,
+    ui.Label('Select Year:'),
+    yearSelect,
+    runButton
+  ],
+  style: { width: '300px', padding: '10px' }
+});
+
+// 📦 In UI einfügen
+ui.root.insert(0, panel);

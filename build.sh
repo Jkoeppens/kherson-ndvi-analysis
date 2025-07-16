@@ -17,6 +17,7 @@ logic_files=(
   gee/logic/zscore.js
   gee/logic/exportzdiff.js
   gee/logic/frontline.js
+  gee/logic/app.js
 )
 
 ui_file="gee/ui/app.js"
